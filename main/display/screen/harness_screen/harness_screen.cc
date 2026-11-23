@@ -5,6 +5,8 @@
 
 #include <esp_log.h>
 
+#include "boot_key_handler.h"
+#include "harness_voice.h"
 #include "product_ui.h"
 #include "standby_screen/standby_screen.h"
 #include "vk_key_handler.h"
@@ -12,12 +14,14 @@
 namespace {
 constexpr const char* kScreenId = "harness";
 constexpr const char* kDemoPages[] = {
-    "这是用于验证界面的演示文本。\n\n"
-    "这里将呈现助手的回复、任务进度和需要你确认的操作。\n\n"
-    "当前尚未连接服务，这些文字不是模型生成的回复。",
-    "墨水屏适合安静地阅读。\n\n"
-    "较长的回复会分成多页。你可以点击下方按钮，也可以使用机身的翻页键。\n\n"
-    "这一页用于检查中文换行、文字边距和翻页响应。",
+    "这是用于验证排版的演示文本。\n\n"
+    "助手的回复将显示在这里。较长的内容可以使用音量键上下翻页：音量加为上一页，音量减为下一页。\n\n"
+    "BOOT 短按进入助手；按住超过半秒开始录音，松手结束。录音时，标题会显示“助手（录音中）”。\n\n"
+    "当前服务尚未接入。演示文本不是模型回复；录音只保留在本机内存中，不会发送。",
+    "阅读与翻页\n\n"
+    "内容区已向上、向下扩展，去掉了屏幕上的上一页和下一页按钮。\n\n"
+    "使用机身音量键可以逐页阅读。到达第一页或最后一页后，继续按键不会越界。\n\n"
+    "页码保留在底部，你可以随时确认当前阅读位置。HOME 可以回到工作台。",
     "你已经读到最后一页。\n\n"
     "点击“返回主页”，或按 HOME，即可回到工作台。\n\n"
     "点击“重读演示”可回到第一页。接入服务后，这里会显示真实的会话内容。",
@@ -26,42 +30,61 @@ constexpr int kPageCount = sizeof(kDemoPages) / sizeof(kDemoPages[0]);
 enum class Action { Demo, Previous, Next, Home };
 
 struct HarnessUi {
-    lv_obj_t* title = nullptr;
+    lv_obj_t* screen = nullptr;
+    lv_obj_t* heading = nullptr;
     lv_obj_t* text = nullptr;
     lv_obj_t* page = nullptr;
-    lv_obj_t* previous = nullptr;
-    lv_obj_t* next = nullptr;
     lv_obj_t* demo = nullptr;
+    lv_timer_t* timer = nullptr;
     bool showing_demo = false;
     int page_index = 0;
 };
 
 void Render(HarnessUi* ui) {
-    product_ui::SetText(ui->title, ui->showing_demo ? "演示回复" : "你的随身助手");
-    product_ui::SetText(ui->text, ui->showing_demo ? kDemoPages[ui->page_index]
-        : "连接服务后，可在这里查看会话、任务状态与助手回复。\n\n"
-          "先点击“演示文本”，体验阅读和翻页。");
+    const auto voice = harness_voice::Snapshot();
+    const bool busy = voice.phase == harness_voice::Phase::Preparing ||
+                      voice.phase == harness_voice::Phase::Recording;
+    const char* heading = voice.phase == harness_voice::Phase::Preparing ? "助手（准备录音）"
+        : voice.phase == harness_voice::Phase::Recording ? "助手（录音中）" : "助手（未连接）";
+    product_ui::SetText(ui->heading, heading);
+    char recording[256];
+    const char* text;
+    if (busy) {
+        text = voice.phase == harness_voice::Phase::Preparing ? "正在准备麦克风，请继续按住 BOOT。"
+            : "正在录音，松开 BOOT 结束。\n\n最长可录制 30 秒。";
+    } else if (ui->showing_demo) {
+        text = kDemoPages[ui->page_index];
+    } else if (voice.phase == harness_voice::Phase::Complete) {
+        std::snprintf(recording, sizeof(recording),
+                      "已录制 %.1f 秒。\n\n服务未连接，录音尚未发送。\n\n再次长按 BOOT 可重新录音。",
+                      voice.duration_ms / 1000.0);
+        text = recording;
+    } else if (voice.phase == harness_voice::Phase::Error) {
+        text = "录音未成功，请稍后重试。\n\n可在设置的音频测试中检查麦克风。";
+    } else {
+        text = "按住 BOOT 开始说话，松手结束。\n\n"
+               "连接服务后，这里会显示会话、任务状态与助手回复。\n\n"
+               "点击“演示文本”可检查排版，使用音量键上下翻页。";
+    }
+    product_ui::SetText(ui->text, text);
     char page[24];
-    std::snprintf(page, sizeof(page), "%d / %d", ui->showing_demo ? ui->page_index + 1 : 0,
-                  ui->showing_demo ? kPageCount : 0);
+    std::snprintf(page, sizeof(page), "%d / %d", ui->showing_demo && !busy ? ui->page_index + 1 : 0,
+                  ui->showing_demo && !busy ? kPageCount : 0);
     product_ui::SetText(ui->page, page);
-    auto set_enabled = [](lv_obj_t* button, bool enabled) {
-        if (enabled) lv_obj_remove_state(button, LV_STATE_DISABLED);
-        else lv_obj_add_state(button, LV_STATE_DISABLED);
-    };
-    set_enabled(ui->previous, ui->showing_demo && ui->page_index > 0);
-    set_enabled(ui->next, ui->showing_demo && ui->page_index + 1 < kPageCount);
     product_ui::SetText(lv_obj_get_child(ui->demo, 0), ui->showing_demo ? "重读演示" : "演示文本");
-    ESP_LOGI("HarnessUI", "render demo=%d page=%d", ui->showing_demo, ui->page_index + 1);
+}
+
+void OnTimer(lv_timer_t* timer) {
+    auto* ui = static_cast<HarnessUi*>(lv_timer_get_user_data(timer));
+    if (lv_screen_active() == ui->screen && !StandbyScreen::IsActive()) Render(ui);
 }
 
 void ApplyAction(void* argument) {
     if (!HarnessScreen::IsActive() || StandbyScreen::IsActive()) return;
     const auto action = static_cast<Action>(reinterpret_cast<intptr_t>(argument));
-    if (action == Action::Home) {
-        ScreenGoHome();
-        return;
-    }
+    if (action == Action::Home) { ScreenGoHome(); return; }
+    const auto voice = harness_voice::Snapshot();
+    if (voice.phase == harness_voice::Phase::Preparing || voice.phase == harness_voice::Phase::Recording) return;
     auto* ui = static_cast<HarnessUi*>(lv_obj_get_user_data(lv_screen_active()));
     if (action == Action::Demo) {
         ui->showing_demo = true;
@@ -70,48 +93,40 @@ void ApplyAction(void* argument) {
         --ui->page_index;
     } else if (ui->showing_demo && action == Action::Next && ui->page_index + 1 < kPageCount) {
         ++ui->page_index;
-    } else {
-        return;
-    }
+    } else return;
     Render(ui);
 }
-
 void RequestAction(Action action) {
     ScreenLvAsync(ApplyAction, reinterpret_cast<void*>(static_cast<intptr_t>(action)));
 }
-
 void OnDemo(lv_event_t*) { RequestAction(Action::Demo); }
-void OnPrevious(lv_event_t*) { RequestAction(Action::Previous); }
-void OnNext(lv_event_t*) { RequestAction(Action::Next); }
 void OnHome(lv_event_t*) { RequestAction(Action::Home); }
-
 bool OnKey(const char* key) {
-    if (std::strcmp(key, "vk_prev") == 0) {
-        RequestAction(Action::Previous);
-        return true;
-    }
-    if (std::strcmp(key, "vk_next") == 0) {
-        RequestAction(Action::Next);
-        return true;
-    }
+    if (std::strcmp(key, "vk_prev") == 0) { RequestAction(Action::Previous); return true; }
+    if (std::strcmp(key, "vk_next") == 0) { RequestAction(Action::Next); return true; }
     return false;
 }
 
-bool OnBootClick() {
-    RequestAction(Action::Demo);
-    return true;
+void BeginRecordingAsync(void*) {
+    if (!HarnessScreen::IsActive() || StandbyScreen::IsActive() || !BootKey_IsHeld()) return;
+    auto* ui = static_cast<HarnessUi*>(lv_obj_get_user_data(lv_screen_active()));
+    ui->showing_demo = false;
+    harness_voice::Begin();
+    Render(ui);
 }
-
-bool OnBootLongPress() { return true; }
-
+bool OnBootClick() { return true; }
+bool OnBootLongPress() { ScreenLvAsync(BeginRecordingAsync); return true; }
+bool OnBootPressUp() { harness_voice::End(); return true; }
+void OnUnload(lv_event_t*) { harness_voice::End(); }
 void OnDelete(lv_event_t* event) {
-    delete static_cast<HarnessUi*>(lv_event_get_user_data(event));
+    auto* ui = static_cast<HarnessUi*>(lv_event_get_user_data(event));
+    lv_timer_delete(ui->timer);
+    delete ui;
 }
-
-void OpenAsync(void*) {
-    if (!HarnessScreen::IsActive() && !StandbyScreen::IsActive()) {
-        ScreenNavigateTo(HarnessScreen::Create);
-    }
+void OpenAsync(void* argument) {
+    if (StandbyScreen::IsActive()) return;
+    if (!HarnessScreen::IsActive()) ScreenNavigateTo(HarnessScreen::Create);
+    if (argument != nullptr) BeginRecordingAsync(nullptr);
 }
 }  // namespace
 
@@ -119,43 +134,35 @@ bool HarnessScreen::IsActive() {
     const char* active = VkKey_ActiveScreen();
     return active != nullptr && std::strcmp(active, kScreenId) == 0;
 }
-
-void HarnessScreen::RequestOpen() {
-    ScreenLvAsync(OpenAsync);
+void HarnessScreen::RequestOpen(bool record_if_held) {
+    ScreenLvAsync(OpenAsync, record_if_held ? reinterpret_cast<void*>(1) : nullptr);
 }
+void HarnessScreen::OnEnterStandby() { harness_voice::End(); }
 
 lv_obj_t* HarnessScreen::Create() {
-    ESP_LOGI("HarnessUI", "create assistant shell (offline)");
+    ESP_LOGI("HarnessUI", "create assistant with hardware PTT");
     auto* ui = new HarnessUi;
-    lv_obj_t* screen = product_ui::Screen();
-    lv_obj_set_user_data(screen, ui);
-    const EpdStatusBar status = ScreenCreateStatusBar(screen);
-    const int width = LV_HOR_RES - 48;
-    const int top = status.height + 20;
+    ui->screen = product_ui::Screen();
+    lv_obj_set_user_data(ui->screen, ui);
+    const EpdStatusBar status = ScreenCreateStatusBar(ui->screen);
+    const int width = LV_HOR_RES - 32;
+    const int top = status.height + 12;
     const int height = LV_VER_RES - top;
-    lv_obj_t* body = product_ui::Box(screen, 24, top, width, height);
-    product_ui::Label(body, 0, 0, width, "助手", product_ui::HeadingFont());
-    product_ui::Label(body, 0, 44, width, "尚未连接服务");
+    lv_obj_t* body = product_ui::Box(ui->screen, 16, top, width, height);
+    ui->heading = product_ui::Label(body, 0, 0, width, "助手（未连接）", product_ui::HeadingFont());
+    ui->text = product_ui::Label(body, 0, 58, width, "");
 
-    lv_obj_t* card = product_ui::Box(body, 0, 104, width, height - 280, 1);
-    ui->title = product_ui::Label(card, 20, 22, width - 40, "", product_ui::HeadingFont());
-    ui->text = product_ui::Label(card, 20, 82, width - 40, "");
-
-    const int button_width = 132;
-    ui->previous = product_ui::Button(body, 0, height - 156, button_width, 52, "上一页", OnPrevious);
-    ui->page = product_ui::Label(body, button_width, height - 142, width - button_width * 2, "0 / 0");
+    ui->demo = product_ui::Button(body, 0, height - 52, 160, 44, "演示文本", OnDemo);
+    ui->page = product_ui::Label(body, 164, height - 44, width - 328, "0 / 0");
     lv_obj_set_style_text_align(ui->page, LV_TEXT_ALIGN_CENTER, 0);
-    ui->next = product_ui::Button(body, width - button_width, height - 156,
-                                  button_width, 52, "下一页", OnNext);
-    const int half = (width - 16) / 2;
-    ui->demo = product_ui::Button(body, 0, height - 88, half, 52, "演示文本", OnDemo);
-    product_ui::Button(body, half + 16, height - 88, half, 52, "返回主页", OnHome, true);
-    product_ui::Label(body, 0, height - 34, width, "演示内容 · 不发送请求");
-
+    product_ui::Button(body, width - 160, height - 52, 160, 44, "返回主页", OnHome, true);
     Render(ui);
-    lv_obj_add_event_cb(screen, OnDelete, LV_EVENT_DELETE, ui);
+    ui->timer = lv_timer_create(OnTimer, 500, ui);
+    lv_obj_add_event_cb(ui->screen, OnUnload, LV_EVENT_SCREEN_UNLOADED, nullptr);
+    lv_obj_add_event_cb(ui->screen, OnDelete, LV_EVENT_DELETE, ui);
     ScreenSetIsHome(false);
-    VkKey_AttachScreen(screen, kScreenId,
-                       VkKeyScreenDesc{HarnessScreen::Create, OnKey, OnBootClick, OnBootLongPress});
-    return screen;
+    VkKey_AttachScreen(ui->screen, kScreenId,
+                       VkKeyScreenDesc{HarnessScreen::Create, OnKey, OnBootClick, OnBootLongPress,
+                                       nullptr, OnBootPressUp});
+    return ui->screen;
 }

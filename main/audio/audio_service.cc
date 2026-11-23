@@ -32,6 +32,8 @@ AudioService::~AudioService() {
         heap_caps_free(opus_codec_tcb_);
         opus_codec_tcb_ = nullptr;
     }
+    heap_caps_free(local_recording_pcm_);
+    local_recording_pcm_ = nullptr;
     if (event_group_ != nullptr) {
         vEventGroupDelete(event_group_);
         event_group_ = nullptr;
@@ -94,7 +96,7 @@ void AudioService::Start() {
     }
 
     service_stopped_ = false;
-    xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+    xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING | AS_EVENT_LOCAL_RECORDING_RUNNING);
 
     esp_timer_start_periodic(audio_power_timer_, 1000000);
 
@@ -207,6 +209,7 @@ void AudioService::Start() {
 }
 
 void AudioService::Stop() {
+    StopLocalRecording();
     if (service_stopped_) {
         return;
     }
@@ -315,7 +318,7 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
 void AudioService::AudioInputTask() {
     while (true) {
         EventBits_t bits = xEventGroupWaitBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING |
-            AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING,
+            AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING | AS_EVENT_LOCAL_RECORDING_RUNNING,
             pdFALSE, pdFALSE, portMAX_DELAY);
 
         if (service_stopped_) {
@@ -324,6 +327,24 @@ void AudioService::AudioInputTask() {
         if (audio_input_need_warmup_) {
             audio_input_need_warmup_ = false;
             vTaskDelay(pdMS_TO_TICKS(120));
+            continue;
+        }
+
+        if (bits & AS_EVENT_LOCAL_RECORDING_RUNNING) {
+            std::vector<int16_t> data;
+            const bool ok = ReadAudioData(data, 16000, 320);
+            std::lock_guard<std::mutex> lock(local_recording_mutex_);
+            if (local_recording_active_) {
+                if (ok) {
+                    local_recording_.AppendInterleaved(data.data(), data.size(), codec_->input_channels());
+                } else {
+                    local_recording_failed_ = true;
+                }
+                if (!ok || local_recording_.full()) {
+                    local_recording_active_ = false;
+                    xEventGroupClearBits(event_group_, AS_EVENT_LOCAL_RECORDING_RUNNING);
+                }
+            }
             continue;
         }
 
@@ -626,6 +647,43 @@ void AudioService::EnableVoiceProcessing(bool enable) {
         audio_processor_->Stop();
         xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
     }
+}
+
+bool AudioService::StartLocalRecording() {
+    std::lock_guard<std::mutex> lock(local_recording_mutex_);
+    const EventBits_t busy = AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING |
+                             AS_EVENT_AUDIO_PROCESSOR_RUNNING;
+    if (service_stopped_ || codec_ == nullptr || (xEventGroupGetBits(event_group_) & busy)) return false;
+    if (local_recording_active_) return true;
+    if (local_recording_pcm_ == nullptr) {
+        local_recording_pcm_ = static_cast<int16_t*>(heap_caps_malloc(
+            kLocalRecordingSamples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (local_recording_pcm_ == nullptr) {
+        ESP_LOGE(TAG, "local recording PSRAM allocation failed");
+        return false;
+    }
+    local_recording_.Reset(local_recording_pcm_, kLocalRecordingSamples);
+    local_recording_failed_ = false;
+    local_recording_active_ = true;
+    xEventGroupSetBits(event_group_, AS_EVENT_LOCAL_RECORDING_RUNNING);
+    ESP_LOGI(TAG, "local recording started (16kHz mono, max 30s)");
+    return true;
+}
+
+void AudioService::StopLocalRecording() {
+    std::lock_guard<std::mutex> lock(local_recording_mutex_);
+    xEventGroupClearBits(event_group_, AS_EVENT_LOCAL_RECORDING_RUNNING);
+    if (!local_recording_active_) return;
+    local_recording_active_ = false;
+    ESP_LOGI(TAG, "local recording ended samples=%u peak=%d",
+             static_cast<unsigned>(local_recording_.size()), local_recording_.peak());
+}
+
+LocalRecordingInfo AudioService::GetLocalRecordingInfo() {
+    std::lock_guard<std::mutex> lock(local_recording_mutex_);
+    return {local_recording_active_, local_recording_failed_,
+            static_cast<uint32_t>(local_recording_.size()), local_recording_.peak()};
 }
 
 void AudioService::EnableAudioTesting(bool enable) {

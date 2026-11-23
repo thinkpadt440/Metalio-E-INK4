@@ -19,6 +19,7 @@
 #include <opus_resampler.h>
 
 #include "audio_codec.h"
+#include "local_recording_buffer.h"
 #include "audio_processor.h"
 #include "processors/audio_debugger.h"
 #include "wake_word.h"
@@ -46,6 +47,7 @@
 #define AS_EVENT_WAKE_WORD_RUNNING          (1 << 1)
 #define AS_EVENT_AUDIO_PROCESSOR_RUNNING    (1 << 2)
 #define AS_EVENT_PLAYBACK_NOT_EMPTY         (1 << 3)
+#define AS_EVENT_LOCAL_RECORDING_RUNNING    (1 << 4)
 
 struct AudioServiceCallbacks {
     std::function<void(void)> on_send_queue_available;
@@ -74,6 +76,13 @@ struct DebugStatistics {
     uint32_t playback_count = 0;
 };
 
+struct LocalRecordingInfo {
+    bool active = false;
+    bool failed = false;
+    uint32_t samples = 0;
+    int peak = 0;
+};
+
 class AudioService {
 public:
     AudioService();
@@ -99,6 +108,11 @@ public:
     void EnableAudioTesting(bool enable);
     void EnableDeviceAec(bool enable);
 
+    // 16kHz mono PCM in bounded PSRAM (30s); no cloud session or playback.
+    bool StartLocalRecording();
+    void StopLocalRecording();
+    LocalRecordingInfo GetLocalRecordingInfo();
+
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
@@ -114,6 +128,13 @@ public:
     void SetModelsList(srmodel_list_t* models_list);
 
 private:
+    static constexpr size_t kLocalRecordingSamples = 16000 * 30;
+    std::mutex local_recording_mutex_;
+    LocalRecordingBuffer local_recording_;
+    int16_t* local_recording_pcm_ = nullptr;
+    bool local_recording_active_ = false;
+    bool local_recording_failed_ = false;
+
     // opus_codec: large stack in PSRAM (wake_word encode pattern); TCB in INTERNAL.
     static constexpr size_t kOpusCodecStackWords = 2048 * 13;
     AudioCodec* codec_ = nullptr;

@@ -18,12 +18,18 @@
 #include "esp_partition.h"
 #include "haptic_feedback.h"
 #include "display_orient.h"
+#include "application.h"
+#include "power_policy.h"
+#include "harness_screen/harness_voice.h"
+#include "local_recording_buffer.h"
 
 static std::vector<unsigned char> font_blob;
 static std::vector<uint32_t> pixels(480*800,0xffffff);
 static const char* active = "none";
 static bool on_home = false;
 static bool asleep = false;
+static bool boot_held = false;
+bool BootKey_IsHeld() { return boot_held; }
 static std::map<std::string,VkKeyScreenDesc> registry;
 extern "C" {
 const esp_partition_t* esp_partition_find_first(int,int,const char*) {
@@ -69,7 +75,7 @@ static void Flush(lv_display_t* display,const lv_area_t* area,uint8_t* data) {
     for(int y=area->y1;y<=area->y2;y++)for(int x=area->x1;x<=area->x2;x++)pixels[y*480+x]=*src++;
     lv_display_flush_ready(display);
 }
-static void Pump() { for(int i=0;i<6;i++){lv_tick_inc(20);lv_timer_handler();}lv_obj_update_layout(lv_screen_active());lv_refr_now(nullptr); }
+static void Pump() { for(int i=0;i<6;i++){Application::GetInstance().Pump();lv_tick_inc(100);lv_timer_handler();}lv_obj_update_layout(lv_screen_active());lv_refr_now(nullptr); }
 static void Save(const char* name) {
     Pump();std::ofstream out(std::string(name)+".ppm",std::ios::binary);out<<"P6\n480 800\n255\n";
     for(uint32_t px:pixels){out.put((px>>16)&255);out.put((px>>8)&255);out.put(px&255);}
@@ -95,6 +101,10 @@ static void Validate(lv_obj_t* root) {
             std::abort();
         }
     }
+    if (HarnessScreen::IsActive() && lv_obj_check_type(root,&lv_label_class) && lv_obj_get_y(root)==58) {
+        auto* parent=lv_obj_get_parent(root);
+        assert(lv_obj_get_y(root)+lv_obj_get_height(root) <= lv_obj_get_height(parent)-52);
+    }
     for(unsigned i=0;i<lv_obj_get_child_count(root);i++)Validate(lv_obj_get_child(root,i));
 }
 int main() {
@@ -104,27 +114,73 @@ int main() {
     static std::vector<uint32_t> buffer(480*800);
     lv_display_set_buffers(display,buffer.data(),nullptr,buffer.size()*4,LV_DISPLAY_RENDER_MODE_FULL);
     lv_display_set_flush_cb(display,Flush);
+    // Exercise actual bounded mono buffer code, including a reference channel and canaries.
+    int16_t memory[] = {123,0,0,0,0,456};
+    const int16_t stereo[] = {100,900,-32768,900,300,900,400,900,500,900};
+    LocalRecordingBuffer recording;
+    recording.Reset(memory+1,4);recording.AppendInterleaved(stereo,10,2);
+    assert(recording.full() && recording.size()==4 && recording.peak()==32768);
+    assert(memory[0]==123 && memory[1]==100 && memory[2]==-32768 && memory[4]==400 && memory[5]==456);
+    recording.AppendInterleaved(stereo,10,0);assert(recording.size()==4);
+
     ScreenLoadReplace(DashboardScreen::Create());Pump();Validate(lv_screen_active());Save("dashboard");
+    assert(Find(lv_screen_active(),"token 速率"));assert(Find(lv_screen_active(),"显存占用"));
+    DashboardMetrics metrics;
+    metrics.valid=true;metrics.token_rate=22.7;metrics.instant_rate=22.8;metrics.generated_tokens=1927;
+    metrics.context_tokens=26144;metrics.context_capacity=32768;metrics.ttft_ms=120;metrics.elapsed_seconds=62.65;
+    metrics.active_tasks=1;metrics.total_slots=4;metrics.gpu=DashboardGpu::Present;
+    metrics.vram_used_gib=2.3;metrics.vram_total_gib=24;
+    DashboardScreen::UpdateMetrics(metrics);Pump();Pump();Validate(lv_screen_active());Save("dashboard-sample");
+    metrics.token_rate=10;DashboardScreen::UpdateMetrics(metrics);Pump();Pump();assert(Find(lv_screen_active(),"峰值 22.7"));
+    metrics.gpu=DashboardGpu::Absent;DashboardScreen::UpdateMetrics(metrics);Pump();Pump();Save("dashboard-no-gpu");
+    auto* gpu=Find(lv_screen_active(),"显存占用");assert(gpu && lv_obj_has_flag(lv_obj_get_parent(gpu),LV_OBJ_FLAG_HIDDEN));
+    DashboardScreen::UpdateMetrics(DashboardMetrics{});Pump();Pump();
     int baseline=Timers();
-    // Every entry path targets the new assistant, including a BOOT callback queued off LVGL.
-    assert(registry["home"].on_boot_long_press());Pump();assert(HarnessScreen::IsActive());
+
+    assert(registry["home"].on_boot_click());Pump();assert(HarnessScreen::IsActive());
     Validate(lv_screen_active());Save("assistant-empty");
+    assert(!Find(lv_screen_active(),"上一页") && !Find(lv_screen_active(),"下一页"));
+    assert(Find(lv_screen_active(),"助手（未连接）"));
     Key("vk_next");assert(Find(lv_screen_active(),"0 / 0"));
     Click("演示文本");Validate(lv_screen_active());Save("assistant-page-1");
     Key("vk_prev");assert(Find(lv_screen_active(),"1 / 3"));
-    Click("下一页");Validate(lv_screen_active());Save("assistant-page-2");
+    Key("vk_next");Validate(lv_screen_active());Save("assistant-page-2");
     Key("vk_next");Validate(lv_screen_active());Save("assistant-page-3");
     Key("vk_next");assert(Find(lv_screen_active(),"3 / 3"));
     Click("重读演示");assert(Find(lv_screen_active(),"1 / 3"));
-    asleep=true;Key("vk_next");assert(Find(lv_screen_active(),"1 / 3"));asleep=false;
+
+    auto& app=Application::GetInstance();auto& audio=app.GetAudioService();
+    boot_held=true;assert(registry[active].on_boot_long_press());Pump();
+    assert(audio.active);assert(harness_voice::Snapshot().phase==harness_voice::Phase::Recording);
+    assert(Find(lv_screen_active(),"助手（录音中）"));Save("assistant-recording");
+    audio.Feed(16000);boot_held=false;registry[active].on_boot_press_up();Pump();
+    assert(!audio.active && harness_voice::Snapshot().duration_ms==1000);
+    assert(harness_voice::Snapshot().phase==harness_voice::Phase::Complete);
+    assert(PowerPolicy::GetInstance().idle());Save("assistant-recorded");
+    // A release before queued initialization must never start capture or reuse the old clip.
+    unsigned starts=audio.starts;
+    harness_voice::Begin();harness_voice::End();Pump();
+    assert(audio.starts==starts && harness_voice::Snapshot().phase==harness_voice::Phase::Idle);
+    app.initialization_hook=[](){harness_voice::End();};
+    harness_voice::Begin();Pump();assert(!audio.active && PowerPolicy::GetInstance().idle());
+    audio.fail_start=true;harness_voice::Begin();Pump();
+    assert(harness_voice::Snapshot().phase==harness_voice::Phase::Error && PowerPolicy::GetInstance().idle());audio.fail_start=false;
+    harness_voice::Begin();Pump();audio.failed=true;audio.active=false;Pump();Pump();
+    assert(harness_voice::Snapshot().phase==harness_voice::Phase::Error && PowerPolicy::GetInstance().idle());
+    // The 30s capacity ends capture and releases both power needs through the real controller.
+    harness_voice::Begin();Pump();audio.Feed(16000*31);Pump();Pump();
+    assert(harness_voice::Snapshot().duration_ms==30000 && PowerPolicy::GetInstance().idle());
+    boot_held=true;registry[active].on_boot_long_press();Pump();assert(audio.active);
+    HarnessScreen::OnEnterStandby();asleep=true;Pump();assert(!audio.active && PowerPolicy::GetInstance().idle());asleep=false;
     Click("返回主页");assert(on_home);Validate(lv_screen_active());
+    boot_held=true;registry["home"].on_boot_long_press();Pump();assert(HarnessScreen::IsActive() && audio.active);
+    ScreenGoHome();Pump();assert(!audio.active && PowerPolicy::GetInstance().idle());boot_held=false;
     Click("设置");assert(std::strcmp(active,"settings")==0);ScreenGoHome();Pump();
-    // Deleting a dashboard must release its timer; pending actions must ignore a departed page.
     for(int i=0;i<60;i++) {
         Click("进入助手");assert(HarnessScreen::IsActive());
         registry[active].on_key("vk_next");ScreenGoHome();Pump();
-        assert(on_home);assert(Timers()==baseline);
+        assert(on_home);assert(Timers()==baseline);assert(PowerPolicy::GetInstance().idle());
     }
-    std::printf("PASS: entry buttons, BOOT, settings, pagination boundaries, standby gating, 60 navigation cycles; timers=%d\n",baseline);
+    std::printf("PASS: telemetry/peak/no-GPU layout, hardware pagination, PTT initialization/release/limit/cancel, bounded mono PCM, 60 navigation cycles; timers=%d\n",baseline);
     Validate(lv_screen_active());
 }

@@ -137,6 +137,7 @@ void StandbyScreen::Show() {
     if (s_host_alive) {
         return;
     }
+    HarnessScreen::OnEnterStandby();
     lv_obj_t* under = lv_screen_active();
     if (under == nullptr) {
         ESP_LOGW(TAG, "show: no active screen");
