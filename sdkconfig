@@ -2821,6 +2821,12 @@ CONFIG_UVC_INTERVAL_ARRAY_SIZE=3
 # end of USB HOST UVC
 
 #
+# zlib Configurations
+#
+CONFIG_ZLIB_PREFER_PSRAM=y
+# end of zlib Configurations
+
+#
 # LVGL configuration
 #
 CONFIG_LV_CONF_SKIP=y
