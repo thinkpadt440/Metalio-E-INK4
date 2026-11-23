@@ -29,7 +29,7 @@ public:
     /** @brief BOOT 短按：待机中忽略，不退出 Overlay */
     static bool HandleBootClick();
 
-    /** @brief BOOT 长按：满时长后摘掉 Overlay 并打开百问 */
+    /** @brief BOOT 长按：满时长后摘掉 Overlay 并打开助手 */
     static bool HandleBootLongPress();
 
     /** @brief 确保当日天气缓存存在；缺失时异步补全 */

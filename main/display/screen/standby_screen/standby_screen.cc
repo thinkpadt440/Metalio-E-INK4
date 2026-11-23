@@ -7,6 +7,7 @@
 
 #include "application.h"
 #include "assistant_screen/assistant_screen.h"
+#include "harness_screen/harness_screen.h"
 #include "book_screen/book_screen.h"
 #include "bq27220_gauge.h"
 #include "display_orient.h"
@@ -101,7 +102,7 @@ static bool StandbyOnVkKey(const char* /*key_name*/) {
 
 static void DismissThenAssistantAsync(void* /*arg*/) {
     StandbyScreen::Dismiss();
-    AssistantScreen::RequestOpen();
+    HarnessScreen::RequestOpen();
 }
 
 static bool OnBootClick() {
@@ -110,8 +111,8 @@ static bool OnBootClick() {
 }
 
 static bool OnBootLongPress() {
-    ESP_LOGI(TAG, "boot long -> assistant (hold-through PTT if still pressed)");
-    AssistantScreen::RequestOpen();
+    ESP_LOGI(TAG, "boot long -> harness");
+    HarnessScreen::RequestOpen();
     return true;
 }
 
@@ -268,7 +269,7 @@ bool StandbyScreen::HandleBootLongPress() {
     if (!s_host_alive) {
         return false;
     }
-    ESP_LOGI(TAG, "boot long -> dismiss + assistant (hold-through)");
+    ESP_LOGI(TAG, "boot long -> dismiss + harness");
     lv_async_call(DismissThenAssistantAsync, nullptr);
     return true;
 }

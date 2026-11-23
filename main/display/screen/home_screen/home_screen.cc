@@ -1,4 +1,5 @@
 #include "home_screen/home_screen_priv.h"
+#include "dashboard_screen/dashboard_screen.h"
 
 #include "home_screen_priv.h"
 #include "home_screen_ui.h"
@@ -6,6 +7,7 @@
 #include "home_card_style.h"
 #include "home_screen/home_hero.h"
 #include "assistant_screen/assistant_screen.h"
+#include "harness_screen/harness_screen.h"
 #include "assets/lang_config.h"
 #include "book_screen/book_screen.h"
 #include "cloud_screen/cloud_screen.h"
@@ -206,11 +208,11 @@ int Home_PageCount()
         return VkPageRepeatOnPressUp(key);
     }
 
-    // BOOT 长按快捷进百问（仍按住则 hold-through 聆听）；短按进待机改走电源键
+    // BOOT 长按进入自定义助手；待机仍由电源键控制。
     bool Home_OnBootLongPress()
     {
-        ESP_LOGI(TAG, "boot long -> assistant (hold-through PTT if still pressed)");
-        AssistantScreen::RequestOpen();
+        ESP_LOGI(TAG, "boot long -> harness");
+        HarnessScreen::RequestOpen();
         return true;
     }
 
@@ -355,115 +357,5 @@ void HomeScreen::SaveCardStyle(int style)
 
 lv_obj_t *HomeScreen::Create()
 {
-    ESP_LOGI(TAG, "launch HomeScreen");
-    lv_obj_t *scr = lv_obj_create(nullptr);
-    Home_scr = scr;
-    lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_font(scr, fontpack_lv_font_ui(), 0);
-    lv_obj_set_style_text_color(scr, lv_color_black(), 0);
-    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-
-    EpdStatusBar status = ScreenCreateStatusBar(scr);
-    status.height = HOME_STATUS_BAR_H;
-    if (status.bar != nullptr)
-    {
-        lv_obj_set_size(status.bar, LV_HOR_RES, HOME_STATUS_BAR_H);
-    }
-    if (status.overlay != nullptr)
-    {
-        lv_obj_set_size(status.overlay, LV_HOR_RES, HOME_STATUS_BAR_H);
-    }
-
-    const int card_style = LoadCardStyle();
-    Home_slash_layout = (card_style == kCardStyleSlash);
-    const int pages = Home_PageCount();
-    ESP_LOGD(TAG, "layout apps=%d pages=%d per_page=%d style=%d slash=%d", kTotalApps, pages,
-             kAppsPerPage, card_style, Home_slash_layout ? 1 : 0);
-
-    if (Home_slash_layout)
-    {
-        HomeHero_MountSlash(scr, status.height);
-        HomeHero_Start();
-
-        // 下半约一半高度留给 3 行斜切宫格（勿用 get_height，创建当下可能仍为 0）
-        const lv_coord_t content_h = LV_VER_RES - status.height;
-        Home_slash_apps_h = content_h / 2;
-        if (Home_slash_apps_h < HOME_SLASH_ROWS * 110)
-        {
-            Home_slash_apps_h = HOME_SLASH_ROWS * 110;
-        }
-        Home_apps = lv_obj_create(scr);
-        lv_obj_remove_style_all(Home_apps);
-        lv_obj_set_size(Home_apps, LV_HOR_RES, Home_slash_apps_h);
-        lv_obj_align(Home_apps, LV_ALIGN_BOTTOM_MID, 0, -HOME_SLASH_BOTTOM_PAD);
-        lv_obj_set_style_bg_color(Home_apps, lv_color_white(), 0);
-        lv_obj_set_style_bg_opa(Home_apps, LV_OPA_COVER, 0);
-        lv_obj_set_flex_flow(Home_apps, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(Home_apps, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
-                              LV_FLEX_ALIGN_START);
-        lv_obj_set_style_pad_row(Home_apps, HOME_SLASH_ROW_GAP, 0);
-        lv_obj_add_flag(Home_apps, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
-        lv_obj_clear_flag(Home_apps, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(Home_apps, LV_OBJ_FLAG_CLICKABLE);
-
-        Home_page_lbl = nullptr;
-        Home_FillAppsPage();
-
-        lv_obj_add_event_cb(scr, Home_OnHomeDeleted, LV_EVENT_DELETE, nullptr);
-        ScreenSetIsHome(true);
-        VkKey_AttachScreen(scr, kScreenId,
-                           VkKeyScreenDesc{HomeScreen::Create, Home_OnVkKey, nullptr, Home_OnBootLongPress,
-                                           nullptr, nullptr, Home_OnVkKeyLongPress, Home_OnVkKeyPressUp});
-        return scr;
-    }
-
-    // 上半：时分 + 日期天气（历史经典待机上半区；不含待办）
-    HomeHero_Mount(scr, status.height);
-    HomeHero_Start();
-
-    const int indicator_h = pages > 1 ? HOME_PAGE_INDICATOR_H : 0;
-    const lv_coord_t apps_content_h =
-        HOME_APPS_PAD_TOP + HOME_APPS_VISIBLE_ROWS * HOME_APP_CARD_H +
-        (HOME_APPS_VISIBLE_ROWS > 1 ? (HOME_APPS_VISIBLE_ROWS - 1) * HOME_APP_CARD_GAP_ROW : 0) +
-        HOME_APPS_PAD_BOT;
-    const lv_coord_t apps_bottom_inset =
-        HOME_APPS_LIFT + (indicator_h > 0 ? indicator_h : 0);
-
-    Home_apps = lv_obj_create(scr);
-    lv_obj_remove_style_all(Home_apps);
-    lv_obj_set_size(Home_apps, LV_HOR_RES, apps_content_h);
-    lv_obj_align(Home_apps, LV_ALIGN_BOTTOM_MID, 0, -apps_bottom_inset);
-    lv_obj_set_style_bg_color(Home_apps, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(Home_apps, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_top(Home_apps, HOME_APPS_PAD_TOP, 0);
-    lv_obj_set_style_pad_bottom(Home_apps, HOME_APPS_PAD_BOT, 0);
-    lv_obj_set_style_pad_left(Home_apps, HOME_APP_CARD_MARGIN_H, 0);
-    lv_obj_set_style_pad_right(Home_apps, HOME_APP_CARD_MARGIN_H, 0);
-    lv_obj_set_style_pad_column(Home_apps, HOME_APP_CARD_GAP_COL, 0);
-    lv_obj_set_style_pad_row(Home_apps, HOME_APP_CARD_GAP_ROW, 0);
-    lv_obj_set_flex_flow(Home_apps, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(Home_apps, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_clear_flag(Home_apps, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(Home_apps, LV_OBJ_FLAG_CLICKABLE);
-
-    Home_page_lbl = lv_label_create(scr);
-    lv_label_set_text(Home_page_lbl, "");
-    lv_obj_set_style_text_font(Home_page_lbl, fontpack_lv_font_ui(), 0);
-    lv_obj_set_style_text_color(Home_page_lbl, lv_color_black(), 0);
-    lv_obj_align(Home_page_lbl, LV_ALIGN_BOTTOM_MID, 0, -4);
-    lv_obj_clear_flag(Home_page_lbl, LV_OBJ_FLAG_CLICKABLE);
-    if (pages <= 1)
-    {
-        lv_obj_add_flag(Home_page_lbl, LV_OBJ_FLAG_HIDDEN);
-    }
-
-    Home_FillAppsPage();
-
-    lv_obj_add_event_cb(scr, Home_OnHomeDeleted, LV_EVENT_DELETE, nullptr);
-    ScreenSetIsHome(true);
-    VkKey_AttachScreen(scr, kScreenId,
-                       VkKeyScreenDesc{HomeScreen::Create, Home_OnVkKey, nullptr, Home_OnBootLongPress,
-                                       nullptr, nullptr, Home_OnVkKeyLongPress, Home_OnVkKeyPressUp});
-    return scr;
+    return DashboardScreen::Create();
 }

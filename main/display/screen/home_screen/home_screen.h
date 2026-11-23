@@ -2,7 +2,7 @@
 
 #include "lvgl.h"
 
-// 首页：状态栏 + Hero + 应用宫格；支持多种卡片样式。
+// 首页入口委托给 DashboardScreen；保留旧主题配置接口供设置页使用。
 class HomeScreen {
 public:
     static constexpr int kCardStyleWhite = 0;

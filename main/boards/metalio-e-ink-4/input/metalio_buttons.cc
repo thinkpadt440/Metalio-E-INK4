@@ -7,6 +7,7 @@
 #include "config.h"
 #include "display.h"
 #include "display/screen/book_screen/book_screen.h"
+#include "display/screen/harness_screen/harness_screen.h"
 #include "display/screen/boot_key_handler.h"
 #include "display/screen/ota_confirm_dialog/ota_confirm_dialog.h"
 #include "display/screen/ota_upgrade_screen/ota_upgrade_screen.h"
@@ -151,7 +152,7 @@ void MetalioButtons_Init(Button& boot, Button& power, std::unique_ptr<Button>& v
         volume_up =
             std::make_unique<Button>(MetalioIoExpanderButton_Create(IOExpander::Pin::VOLUME_UP));
 
-        // 正文阅读：音量+ = 上一页，音量- = 下一页（含长按连翻）；其它页仍调音量
+        // 阅读/助手：音量+ = 上一页，音量- = 下一页；其它页仍调音量
         volume_up->OnClick([board]() {
             if (BatteryUvLockout_IsActive()) {
                 return;
@@ -169,7 +170,7 @@ void MetalioButtons_Init(Button& boot, Button& power, std::unique_ptr<Button>& v
                 return;
             }
             PowerPolicy::GetInstance().NotifyUserActivity();
-            if (BookScreen::IsReadingActive()) {
+            if (BookScreen::IsReadingActive() || HarnessScreen::IsActive()) {
                 VkKey_Dispatch("vk_prev");
                 return;
             }
@@ -196,7 +197,7 @@ void MetalioButtons_Init(Button& boot, Button& power, std::unique_ptr<Button>& v
                 return;
             }
             PowerPolicy::GetInstance().NotifyUserActivity();
-            if (BookScreen::IsReadingActive()) {
+            if (BookScreen::IsReadingActive() || HarnessScreen::IsActive()) {
                 VkKey_OnLongPress("vk_prev");
                 return;
             }
@@ -217,7 +218,7 @@ void MetalioButtons_Init(Button& boot, Button& power, std::unique_ptr<Button>& v
             if (SettingsTestAgingScreen::IsActive()) {
                 return;
             }
-            if (BookScreen::IsReadingActive()) {
+            if (BookScreen::IsReadingActive() || HarnessScreen::IsActive()) {
                 VkKey_OnPressUp("vk_prev");
             }
         });
@@ -239,7 +240,7 @@ void MetalioButtons_Init(Button& boot, Button& power, std::unique_ptr<Button>& v
                 return;
             }
             PowerPolicy::GetInstance().NotifyUserActivity();
-            if (BookScreen::IsReadingActive()) {
+            if (BookScreen::IsReadingActive() || HarnessScreen::IsActive()) {
                 VkKey_Dispatch("vk_next");
                 return;
             }
@@ -266,7 +267,7 @@ void MetalioButtons_Init(Button& boot, Button& power, std::unique_ptr<Button>& v
                 return;
             }
             PowerPolicy::GetInstance().NotifyUserActivity();
-            if (BookScreen::IsReadingActive()) {
+            if (BookScreen::IsReadingActive() || HarnessScreen::IsActive()) {
                 VkKey_OnLongPress("vk_next");
                 return;
             }
@@ -287,7 +288,7 @@ void MetalioButtons_Init(Button& boot, Button& power, std::unique_ptr<Button>& v
             if (SettingsTestAgingScreen::IsActive()) {
                 return;
             }
-            if (BookScreen::IsReadingActive()) {
+            if (BookScreen::IsReadingActive() || HarnessScreen::IsActive()) {
                 VkKey_OnPressUp("vk_next");
             }
         });
