@@ -1,127 +1,124 @@
 #include "dashboard_screen.h"
 
-#include <algorithm>
-#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
 
 #include <esp_log.h>
 
-#include "board.h"
-#include "harness_screen/harness_screen.h"
 #include "product_ui.h"
-#include "settings_screen/settings_network_tab.h"
 #include "settings_screen/settings_screen.h"
 #include "standby_screen/standby_screen.h"
+#include "harness_screen/harness_screen.h"
 #include "vk_key_handler.h"
 
 namespace {
 constexpr const char* kScreenId = "home";
+constexpr int kRangeCount = 3;
 std::mutex s_metrics_mutex;
 DashboardMetrics s_metrics;
-double s_peak_rate = 0;
 
 struct DashboardUi {
     lv_obj_t* screen = nullptr;
-    lv_obj_t* cards[4] = {};
-    lv_obj_t* rate = nullptr;
-    lv_obj_t* instant = nullptr;
-    lv_obj_t* peak = nullptr;
-    lv_obj_t* generated = nullptr;
-    lv_obj_t* context = nullptr;
-    lv_obj_t* ttft = nullptr;
-    lv_obj_t* usage = nullptr;
-    lv_obj_t* elapsed = nullptr;
-    lv_obj_t* tasks = nullptr;
-    lv_obj_t* slots = nullptr;
-    lv_obj_t* vram = nullptr;
-    lv_obj_t* vram_total = nullptr;
-    lv_obj_t* network = nullptr;
+    lv_obj_t* values[6] = {};
+    lv_obj_t* range_buttons[kRangeCount] = {};
+    lv_obj_t* data_status = nullptr;
     lv_timer_t* timer = nullptr;
-    unsigned ticks = 0;
-    bool has_metrics = false;
+    int selected_range = 0;
 };
 
+void SetSelectedRange(DashboardUi* ui, int selected) {
+    ui->selected_range = selected;
+    for (int i = 0; i < kRangeCount; ++i) {
+        const bool active = i == selected;
+        lv_obj_set_style_bg_color(ui->range_buttons[i],
+                                  active ? lv_color_black() : lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(ui->range_buttons[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(ui->range_buttons[i],
+                                    active ? lv_color_white() : lv_color_black(), 0);
+    }
+}
+
+void SelectRange(int selected) {
+    auto* screen = lv_screen_active();
+    auto* ui = screen == nullptr
+        ? nullptr
+        : static_cast<DashboardUi*>(lv_obj_get_user_data(screen));
+    if (ui == nullptr || ui->screen != screen) return;
+    SetSelectedRange(ui, selected);
+}
+
+void OnRangeAll(lv_event_t*) { SelectRange(0); }
+void OnRange30d(lv_event_t*) { SelectRange(1); }
+void OnRange7d(lv_event_t*) { SelectRange(2); }
+
+void FormatCount(uint64_t value, char* out, size_t capacity) {
+    char raw[24];
+    std::snprintf(raw, sizeof(raw), "%llu", static_cast<unsigned long long>(value));
+    const size_t length = std::strlen(raw);
+    size_t pos = 0;
+    for (size_t i = 0; i < length && pos + 1 < capacity; ++i) {
+        if (i != 0 && (length - i) % 3 == 0 && pos + 1 < capacity) out[pos++] = ',';
+        if (pos + 1 < capacity) out[pos++] = raw[i];
+    }
+    out[pos] = '\0';
+}
+
+void FormatTokens(uint64_t value, char* out, size_t capacity) {
+    if (value >= 1000000000ULL) {
+        std::snprintf(out, capacity, "%.1fB", static_cast<double>(value) / 1000000000.0);
+    } else if (value >= 1000000ULL) {
+        std::snprintf(out, capacity, "%.1fM", static_cast<double>(value) / 1000000.0);
+    } else if (value >= 1000ULL) {
+        std::snprintf(out, capacity, "%.1fK", static_cast<double>(value) / 1000.0);
+    } else {
+        FormatCount(value, out, capacity);
+    }
+}
 void RefreshMetrics(DashboardUi* ui) {
     DashboardMetrics metrics;
-    double peak;
     {
         std::lock_guard<std::mutex> lock(s_metrics_mutex);
         metrics = s_metrics;
-        peak = s_peak_rate;
     }
-    ui->has_metrics = metrics.valid;
-    auto value = [](lv_obj_t* label, const char* format, double number) {
-        char text[64];
-        std::snprintf(text, sizeof(text), format, number);
-        product_ui::SetText(label, text);
-    };
-    if (metrics.valid) {
-        value(ui->rate, "%.1f", metrics.token_rate);
-        value(ui->instant, "瞬时 %.1f", metrics.instant_rate);
-        value(ui->peak, "峰值 %.1f", peak);
-        value(ui->generated, "%.0f", metrics.generated_tokens);
-        value(ui->context, "上下文 %.0f", metrics.context_tokens);
-        value(ui->ttft, "TTFT %.0fms", metrics.ttft_ms);
-        if (metrics.context_capacity > 0) {
-            value(ui->usage, "使用率 %.1f%%", 100.0 * metrics.context_tokens / metrics.context_capacity);
-        } else {
-            product_ui::SetText(ui->usage, "使用率 --");
-        }
-        value(ui->elapsed, "耗时 %.1fs", metrics.elapsed_seconds);
-        value(ui->tasks, "%.0f", metrics.active_tasks);
-        value(ui->slots, "总槽位 %.0f", metrics.total_slots);
-    } else {
-        product_ui::SetText(ui->rate, "--");
-        product_ui::SetText(ui->instant, "瞬时 --");
-        product_ui::SetText(ui->peak, "峰值 --");
-        product_ui::SetText(ui->generated, "--");
-        product_ui::SetText(ui->context, "上下文 --");
-        product_ui::SetText(ui->ttft, "TTFT --");
-        product_ui::SetText(ui->usage, "使用率 --");
-        product_ui::SetText(ui->elapsed, "耗时 --");
-        product_ui::SetText(ui->tasks, "--");
-        product_ui::SetText(ui->slots, "总槽位 --");
+
+    if (!metrics.valid) {
+        for (lv_obj_t* value : ui->values) product_ui::SetText(value, "--");
+        product_ui::SetText(ui->data_status, "Harness 统计接口待接入");
+        return;
     }
-    if (metrics.gpu == DashboardGpu::Absent) {
-        lv_obj_add_flag(ui->cards[3], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_width(ui->cards[2], LV_HOR_RES - 32);
-    } else {
-        lv_obj_remove_flag(ui->cards[3], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_width(ui->cards[2], (LV_HOR_RES - 44) / 2);
-        if (metrics.valid && metrics.gpu == DashboardGpu::Present) {
-            value(ui->vram, "%.1f GiB", metrics.vram_used_gib);
-            value(ui->vram_total, "总计 %.1f GiB", metrics.vram_total_gib);
-        } else {
-            product_ui::SetText(ui->vram, "--");
-            product_ui::SetText(ui->vram_total, "待检测");
-        }
-    }
+
+    char text[48];
+    FormatCount(metrics.sessions, text, sizeof(text));
+    product_ui::SetText(ui->values[0], text);
+    FormatCount(metrics.messages, text, sizeof(text));
+    product_ui::SetText(ui->values[1], text);
+    FormatTokens(metrics.total_tokens, text, sizeof(text));
+    product_ui::SetText(ui->values[2], text);
+    FormatCount(metrics.active_days, text, sizeof(text));
+    product_ui::SetText(ui->values[3], text);
+    product_ui::SetText(ui->values[4], metrics.peak_hour[0] == '\0' ? "--" : metrics.peak_hour);
+    product_ui::SetText(ui->values[5],
+                        metrics.favorite_model[0] == '\0' ? "--" : metrics.favorite_model);
+    product_ui::SetText(ui->data_status, "统计周期可切换 · 数据由 Harness 提供");
 }
 
 void OnTimer(lv_timer_t* timer) {
     auto* ui = static_cast<DashboardUi*>(lv_timer_get_user_data(timer));
     if (lv_screen_active() != ui->screen || StandbyScreen::IsActive()) return;
     RefreshMetrics(ui);
-    // Initial screen construction happens inside Board construction; delay Board reads.
-    if (++ui->ticks % 5 == 0) {
-        const bool wifi = SettingsNetworkTab_IsWifi();
-        const bool ready = Board::GetInstance().IsNetworkReady();
-        product_ui::SetText(ui->network, wifi
-            ? (ready ? (ui->has_metrics ? "Wi-Fi 已连接" : "Wi-Fi 已连接 · 指标待接入") : "Wi-Fi 未连接")
-            : (ready ? (ui->has_metrics ? "4G 已连接" : "4G 已连接 · 指标待接入") : "4G 未连接"));
-    }
 }
 
 void OnDelete(lv_event_t* event) {
     auto* ui = static_cast<DashboardUi*>(lv_event_get_user_data(event));
-    lv_timer_delete(ui->timer);
+    if (ui->timer != nullptr) lv_timer_delete(ui->timer);
     delete ui;
 }
 
 void OpenSettingsAsync(void*) {
-    if (ScreenIsHome() && !StandbyScreen::IsActive()) ScreenNavigateTo(SettingsScreen::Create);
+    if (ScreenIsHome() && !StandbyScreen::IsActive()) {
+        ScreenNavigateTo(SettingsScreen::Create);
+    }
 }
 void OnSettings(lv_event_t*) { lv_async_call(OpenSettingsAsync, nullptr); }
 void OnAssistant(lv_event_t*) { HarnessScreen::RequestOpen(); }
@@ -131,72 +128,85 @@ bool OnKey(const char* key) {
     return std::strcmp(key, "vk_prev") == 0 || std::strcmp(key, "vk_next") == 0;
 }
 
-lv_obj_t* Metric(lv_obj_t* card, int y, const char* text, bool large = false) {
-    lv_obj_t* label = product_ui::Label(card, 12, y, (LV_HOR_RES - 44) / 2 - 24, text,
-                                       large ? product_ui::HeadingFont() : nullptr);
-    lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-    lv_obj_set_height(label, large ? 38 : 31);
-    return label;
+lv_obj_t* CreateMetricCard(lv_obj_t* parent, int x, int y, int width, int height,
+                           const char* title, const char* note, lv_obj_t** value_out) {
+    lv_obj_t* card = product_ui::Box(parent, x, y, width, height, 1);
+    lv_obj_set_style_radius(card, 8, 0);
+    product_ui::Label(card, 12, 10, width - 24, title);
+    *value_out = product_ui::Label(card, 12, 40, width - 24, "--",
+                                   product_ui::HeadingFont());
+    lv_obj_set_height(*value_out, 42);
+    lv_label_set_long_mode(*value_out, LV_LABEL_LONG_DOT);
+    product_ui::Label(card, 12, height - 34, width - 24, note);
+    return card;
+}
+
+lv_obj_t* CreateRangeButton(lv_obj_t* parent, int x, const char* text,
+                            lv_event_cb_t callback) {
+    lv_obj_t* button = product_ui::Button(parent, x, 44, 70, 38, text, callback);
+    lv_obj_set_style_radius(button, 6, 0);
+    return button;
 }
 }  // namespace
 
 void DashboardScreen::UpdateMetrics(const DashboardMetrics& metrics) {
     std::lock_guard<std::mutex> lock(s_metrics_mutex);
     s_metrics = metrics;
-    if (metrics.valid && std::isfinite(metrics.token_rate)) {
-        s_peak_rate = std::max(s_peak_rate, metrics.token_rate);
-    }
 }
 
 lv_obj_t* DashboardScreen::Create() {
-    ESP_LOGI("Dashboard", "create telemetry dashboard");
+    ESP_LOGI("Dashboard", "create vertical usage overview");
     auto* ui = new DashboardUi;
     ui->screen = product_ui::Screen();
+    lv_obj_set_user_data(ui->screen, ui);
+
     const EpdStatusBar status = ScreenCreateStatusBar(ui->screen);
     const int width = LV_HOR_RES - 32;
-    const int top = status.height + 16;
+    const int top = status.height + 12;
     const int height = LV_VER_RES - top;
     lv_obj_t* body = product_ui::Box(ui->screen, 16, top, width, height);
-    product_ui::Label(body, 0, 0, width, "工作台", product_ui::HeadingFont());
 
-    const int card_width = (width - 12) / 2;
-    for (int i = 0; i < 4; ++i) {
-        ui->cards[i] = product_ui::Box(body, (i % 2) * (card_width + 12),
-                                      58 + (i / 2) * 262, card_width, 250, 1);
-    }
-    Metric(ui->cards[0], 14, "token 速率");
-    ui->rate = Metric(ui->cards[0], 55, "--", true);
-    Metric(ui->cards[0], 98, "单位 token/s");
-    ui->instant = Metric(ui->cards[0], 150, "瞬时 --");
-    ui->peak = Metric(ui->cards[0], 194, "峰值 --");
+    product_ui::Label(body, 0, 0, 190, "使用概览", product_ui::HeadingFont());
+    ui->range_buttons[0] = CreateRangeButton(body, width - 236, "全部", OnRangeAll);
+    ui->range_buttons[1] = CreateRangeButton(body, width - 158, "30天", OnRange30d);
+    ui->range_buttons[2] = CreateRangeButton(body, width - 80, "7天", OnRange7d);
+    SetSelectedRange(ui, 0);
 
-    Metric(ui->cards[1], 14, "生成 token");
-    ui->generated = Metric(ui->cards[1], 55, "--", true);
-    ui->context = Metric(ui->cards[1], 100, "上下文 --");
-    ui->ttft = Metric(ui->cards[1], 137, "TTFT --");
-    ui->usage = Metric(ui->cards[1], 174, "使用率 --");
-    ui->elapsed = Metric(ui->cards[1], 211, "耗时 --");
+    const int gap = 10;
+    const int card_width = (width - gap) / 2;
+    const int card_height = 132;
+    const int first_y = 94;
+    CreateMetricCard(body, 0, first_y, card_width, card_height,
+                     "会话数", "当前周期", &ui->values[0]);
+    CreateMetricCard(body, card_width + gap, first_y, card_width, card_height,
+                     "消息数", "用户消息数", &ui->values[1]);
+    CreateMetricCard(body, 0, first_y + card_height + gap, card_width, card_height,
+                     "总 Token", "输入和输出", &ui->values[2]);
+    CreateMetricCard(body, card_width + gap, first_y + card_height + gap,
+                     card_width, card_height, "活跃天数",
+                     "活跃日期", &ui->values[3]);
+    CreateMetricCard(body, 0, first_y + 2 * (card_height + gap), card_width, card_height,
+                     "高峰时段", "请求最高时段", &ui->values[4]);
+    CreateMetricCard(body, card_width + gap, first_y + 2 * (card_height + gap),
+                     card_width, card_height, "常用模型",
+                     "当前周期", &ui->values[5]);
+    lv_obj_set_style_text_font(ui->values[5], fontpack_lv_font_ui(), 0);
 
-    Metric(ui->cards[2], 14, "推理任务");
-    ui->tasks = Metric(ui->cards[2], 65, "--", true);
-    Metric(ui->cards[2], 110, "进行中");
-    ui->slots = Metric(ui->cards[2], 177, "总槽位 --");
+    ui->data_status = product_ui::Label(body, 0, first_y + 3 * card_height + 2 * gap + 8,
+                                        width, "Harness 统计接口待接入");
+    const int button_y = height - 72;
+    const int button_width = (width - 12) / 2;
+    product_ui::Button(body, 0, button_y, button_width, 58, "进入助手",
+                       OnAssistant, true);
+    product_ui::Button(body, button_width + 12, button_y, button_width, 58, "设置",
+                       OnSettings);
 
-    Metric(ui->cards[3], 14, "显存占用");
-    ui->vram = Metric(ui->cards[3], 65, "--", true);
-    ui->vram_total = Metric(ui->cards[3], 119, "待检测");
-    Metric(ui->cards[3], 177, "单位 GiB");
-    ui->network = product_ui::Label(body, 0, 588, width, "指标数据待接入");
-
-    const int half = (width - 12) / 2;
-    product_ui::Button(body, 0, height - 106, half, 58, "进入助手", OnAssistant, true);
-    product_ui::Button(body, half + 12, height - 106, half, 58, "设置", OnSettings);
-    product_ui::Label(body, 0, height - 34, width, "BOOT 进入助手 / 长按录音");
     RefreshMetrics(ui);
     ui->timer = lv_timer_create(OnTimer, 1000, ui);
     lv_obj_add_event_cb(ui->screen, OnDelete, LV_EVENT_DELETE, ui);
     ScreenSetIsHome(true);
     VkKey_AttachScreen(ui->screen, kScreenId,
-                       VkKeyScreenDesc{DashboardScreen::Create, OnKey, OnBootClick, OnBootLongPress});
+                       VkKeyScreenDesc{DashboardScreen::Create, OnKey, OnBootClick,
+                                       OnBootLongPress});
     return ui->screen;
 }

@@ -1,27 +1,27 @@
 # 自定义 UI 离线检查
 
-在 WSL/Linux 中，使用项目已有的 LVGL、实际页面源码及 Flash 字体包渲染 480×800 页面。
-不需要设备、显示服务器或额外下载依赖；需要 CMake 和主机 C/C++ 编译器。
+在 WSL/Linux 中，使用项目实际页面源码、LVGL 与 Flash 字体包渲染 Metalio E-Ink4 的
+480×800 竖屏逻辑画布。不需要设备或显示服务器；需要 CMake 和主机 C/C++ 编译器。
 
-```bash
+运行命令：
 cmake -S tools/ui_preview -B build/ui-preview-host
 cmake --build build/ui-preview-host -j 8
 cd build/ui-preview-host
 ./preview
-```
 
-成功时输出 `PASS`，并生成 dashboard、助手空页面和三页演示回复的 PPM 图片。
-PPM 可用 Pillow 或图片查看器打开。模拟器使用 32 位软件渲染，因此不验证墨水屏波形、
-真实局刷、触摸硬件、充电、网络连接和休眠唤醒。预览状态栏为固定占位值。
+成功时输出 PASS，并生成 dashboard、最近 Session 列表、聊天页、模型选择器和 BOOT
+录音状态的 PPM 图片。检查包括六项统计字段与数字格式、周期选择、会话选择、模型和授权
+按 Session 分别保留、音量键分页、固定闲聊入口、BOOT 录音流程、页面边界和 60 次导航后的
+定时器清理。预览状态栏为固定占位值。
 
-检查包括触摸按钮入口、BOOT 回调、设置返回、分页边界、待机中的分页拦截、
-60 次页面往返的定时器清理，以及标签是否超出父容器。HOME 的默认分发和
-音量键路由仍需结合真机检查。
+离线测试不能验证墨水屏波形、局刷、触摸硬件、充电、网络连接和休眠唤醒。Session、模型和
+授权选择仍使用本地示例；接入 Harness 后应由服务端提供真实列表和会话数据。首页没有真实
+统计数据时显示 --。HOME 默认分发和硬件按键仍需真机检查。
 
-`stubs/` 只替代硬件、Flash 映射与 RTOS 接口；字体加载及页面实现直接编译项目源码。
+stubs/ 只替代硬件、Flash 映射与 RTOS 接口；字体加载及页面实现直接编译项目源码。
 主机渲染文件不会参与 ESP-IDF 固件构建。
 
-PTT 控制器直接编译 `harness_voice.cc`，主机模拟任务队列、AudioService 和电源活动计数。
-另使用真实的 `LocalRecordingBuffer` 检查双声道抽取麦克风、容量上限、极值峰值和边界哨兵。
+PTT 控制器直接编译 harness_voice.cc，主机模拟任务队列、AudioService 和电源活动计数。
+另使用真实的 LocalRecordingBuffer 检查双声道抽取麦克风、容量上限、极值峰值和边界哨兵。
 覆盖初始化前/中松手、启动/输入失败、30 秒上限、离页和待机停止；不代表真实 I2S 采集测试通过。
-指标样例图使用测试数据，设备实际仍显示待接入占位值。
+Dashboard 样例图使用测试输入，固件无统计数据时仍显示待接入状态。

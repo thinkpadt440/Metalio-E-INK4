@@ -123,40 +123,86 @@ int main() {
     assert(memory[0]==123 && memory[1]==100 && memory[2]==-32768 && memory[4]==400 && memory[5]==456);
     recording.AppendInterleaved(stereo,10,0);assert(recording.size()==4);
 
-    ScreenLoadReplace(DashboardScreen::Create());Pump();Validate(lv_screen_active());Save("dashboard");
-    assert(Find(lv_screen_active(),"token 速率"));assert(Find(lv_screen_active(),"显存占用"));
+    ScreenLoadReplace(DashboardScreen::Create());Pump();Validate(lv_screen_active());
+    Save("dashboard");
+    assert(Find(lv_screen_active(),"会话数"));
+    assert(Find(lv_screen_active(),"消息数"));
+    assert(Find(lv_screen_active(),"总 Token"));
+    assert(Find(lv_screen_active(),"活跃天数"));
+    assert(Find(lv_screen_active(),"高峰时段"));
+    assert(Find(lv_screen_active(),"常用模型"));
+    assert(!Find(lv_screen_active(),"token 速率") && !Find(lv_screen_active(),"显存占用"));
+
     DashboardMetrics metrics;
-    metrics.valid=true;metrics.token_rate=22.7;metrics.instant_rate=22.8;metrics.generated_tokens=1927;
-    metrics.context_tokens=26144;metrics.context_capacity=32768;metrics.ttft_ms=120;metrics.elapsed_seconds=62.65;
-    metrics.active_tasks=1;metrics.total_slots=4;metrics.gpu=DashboardGpu::Present;
-    metrics.vram_used_gib=2.3;metrics.vram_total_gib=24;
-    DashboardScreen::UpdateMetrics(metrics);Pump();Pump();Validate(lv_screen_active());Save("dashboard-sample");
-    metrics.token_rate=10;DashboardScreen::UpdateMetrics(metrics);Pump();Pump();assert(Find(lv_screen_active(),"峰值 22.7"));
-    metrics.gpu=DashboardGpu::Absent;DashboardScreen::UpdateMetrics(metrics);Pump();Pump();Save("dashboard-no-gpu");
-    auto* gpu=Find(lv_screen_active(),"显存占用");assert(gpu && lv_obj_has_flag(lv_obj_get_parent(gpu),LV_OBJ_FLAG_HIDDEN));
+    metrics.valid=true;
+    metrics.sessions=53;
+    metrics.messages=5980;
+    metrics.total_tokens=1900000000ULL;
+    metrics.active_days=22;
+    std::strncpy(metrics.peak_hour,"14:00",sizeof(metrics.peak_hour)-1);
+    std::strncpy(metrics.favorite_model,"deepseek-flash",sizeof(metrics.favorite_model)-1);
+    DashboardScreen::UpdateMetrics(metrics);Pump();Pump();Validate(lv_screen_active());
+    assert(Find(lv_screen_active(),"53"));
+    assert(Find(lv_screen_active(),"5,980"));
+    assert(Find(lv_screen_active(),"1.9B"));
+    assert(Find(lv_screen_active(),"22"));
+    assert(Find(lv_screen_active(),"14:00"));
+    assert(Find(lv_screen_active(),"deepseek-flash"));
+    Save("dashboard-sample");
+    Click("30天");Click("7天");Click("全部");
     DashboardScreen::UpdateMetrics(DashboardMetrics{});Pump();Pump();
+    assert(Find(lv_screen_active(),"Harness 统计接口待接入"));
     int baseline=Timers();
 
+    // Opening the assistant first shows recent sessions; selecting one enters chat.
     assert(registry["home"].on_boot_click());Pump();assert(HarnessScreen::IsActive());
-    Validate(lv_screen_active());Save("assistant-empty");
+    Validate(lv_screen_active());Save("assistant-sessions");
+    assert(Find(lv_screen_active(),"最近活动"));
+    assert(Find(lv_screen_active(),"示例"));
+    assert(Find(lv_screen_active(),"E-INK4 固件 UI 改版"));
+    assert(!Find(lv_screen_active(),"长按 BOOT") && !Find(lv_screen_active(),"音量键"));
+
+    Click("E-INK4 固件 UI 改版");
+    Validate(lv_screen_active());Save("assistant-chat-page-1");
+    assert(Find(lv_screen_active(),"接收（未连接）"));
+    assert(Find(lv_screen_active(),"模型\n服务端默认"));
+    assert(Find(lv_screen_active(),"授权级别\n标准"));
     assert(!Find(lv_screen_active(),"上一页") && !Find(lv_screen_active(),"下一页"));
-    assert(Find(lv_screen_active(),"助手（未连接）"));
-    Key("vk_next");assert(Find(lv_screen_active(),"0 / 0"));
-    Click("演示文本");Validate(lv_screen_active());Save("assistant-page-1");
-    Key("vk_prev");assert(Find(lv_screen_active(),"1 / 3"));
-    Key("vk_next");Validate(lv_screen_active());Save("assistant-page-2");
-    Key("vk_next");Validate(lv_screen_active());Save("assistant-page-3");
-    Key("vk_next");assert(Find(lv_screen_active(),"3 / 3"));
-    Click("重读演示");assert(Find(lv_screen_active(),"1 / 3"));
+    Key("vk_next");assert(Find(lv_screen_active(),"2 / 2"));Save("assistant-chat-page-2");
+    Key("vk_next");assert(Find(lv_screen_active(),"2 / 2"));
+    Key("vk_prev");assert(Find(lv_screen_active(),"1 / 2"));
+
+    Click("模型\n服务端默认");
+    assert(Find(lv_screen_active(),"选择模型"));Save("assistant-model-picker");
+    Click("DeepSeek Chat");
+    assert(Find(lv_screen_active(),"模型\nDeepSeek Chat"));
+    Click("授权级别\n标准");
+    assert(Find(lv_screen_active(),"选择授权级别"));
+    Click("扩展");
+    assert(Find(lv_screen_active(),"授权级别\n扩展"));
+    Save("assistant-settings");
+
+    // Model and authorization are kept separately per session.
+    Click("返回");assert(Find(lv_screen_active(),"最近活动"));
+    Click("ESP-IDF 串口排错");
+    assert(Find(lv_screen_active(),"模型\n服务端默认"));
+    assert(Find(lv_screen_active(),"授权级别\n标准"));
+    Key("vk_next");assert(Find(lv_screen_active(),"2 / 2"));
+    Key("vk_prev");assert(Find(lv_screen_active(),"1 / 2"));
+    Click("返回");
 
     auto& app=Application::GetInstance();auto& audio=app.GetAudioService();
+    // BOOT from the list goes to the dedicated casual session and starts PTT there.
     boot_held=true;assert(registry[active].on_boot_long_press());Pump();
-    assert(audio.active);assert(harness_voice::Snapshot().phase==harness_voice::Phase::Recording);
-    assert(Find(lv_screen_active(),"助手（录音中）"));Save("assistant-recording");
+    assert(HarnessScreen::IsActive() && audio.active);
+    assert(Find(lv_screen_active(),"固定闲聊"));
+    assert(Find(lv_screen_active(),"接收（录音中）"));
+    Save("assistant-casual-recording");
     audio.Feed(16000);boot_held=false;registry[active].on_boot_press_up();Pump();
     assert(!audio.active && harness_voice::Snapshot().duration_ms==1000);
     assert(harness_voice::Snapshot().phase==harness_voice::Phase::Complete);
-    assert(PowerPolicy::GetInstance().idle());Save("assistant-recorded");
+    assert(PowerPolicy::GetInstance().idle());Save("assistant-casual-recorded");
+
     // A release before queued initialization must never start capture or reuse the old clip.
     unsigned starts=audio.starts;
     harness_voice::Begin();harness_voice::End();Pump();
@@ -164,23 +210,32 @@ int main() {
     app.initialization_hook=[](){harness_voice::End();};
     harness_voice::Begin();Pump();assert(!audio.active && PowerPolicy::GetInstance().idle());
     audio.fail_start=true;harness_voice::Begin();Pump();
-    assert(harness_voice::Snapshot().phase==harness_voice::Phase::Error && PowerPolicy::GetInstance().idle());audio.fail_start=false;
+    assert(harness_voice::Snapshot().phase==harness_voice::Phase::Error && PowerPolicy::GetInstance().idle());
+    audio.fail_start=false;
     harness_voice::Begin();Pump();audio.failed=true;audio.active=false;Pump();Pump();
     assert(harness_voice::Snapshot().phase==harness_voice::Phase::Error && PowerPolicy::GetInstance().idle());
+
     // The 30s capacity ends capture and releases both power needs through the real controller.
     harness_voice::Begin();Pump();audio.Feed(16000*31);Pump();Pump();
     assert(harness_voice::Snapshot().duration_ms==30000 && PowerPolicy::GetInstance().idle());
     boot_held=true;registry[active].on_boot_long_press();Pump();assert(audio.active);
-    HarnessScreen::OnEnterStandby();asleep=true;Pump();assert(!audio.active && PowerPolicy::GetInstance().idle());asleep=false;
-    Click("返回主页");assert(on_home);Validate(lv_screen_active());
-    boot_held=true;registry["home"].on_boot_long_press();Pump();assert(HarnessScreen::IsActive() && audio.active);
+    HarnessScreen::OnEnterStandby();asleep=true;Pump();
+    assert(!audio.active && PowerPolicy::GetInstance().idle());asleep=false;boot_held=false;
+
+    ScreenGoHome();Pump();assert(!audio.active && PowerPolicy::GetInstance().idle());
+    boot_held=true;registry["home"].on_boot_long_press();Pump();
+    assert(HarnessScreen::IsActive() && audio.active);
+    assert(Find(lv_screen_active(),"固定闲聊"));
     ScreenGoHome();Pump();assert(!audio.active && PowerPolicy::GetInstance().idle());boot_held=false;
+
     Click("设置");assert(std::strcmp(active,"settings")==0);ScreenGoHome();Pump();
     for(int i=0;i<60;i++) {
         Click("进入助手");assert(HarnessScreen::IsActive());
-        registry[active].on_key("vk_next");ScreenGoHome();Pump();
+        Click("Harness 接入方案");
+        registry[active].on_key("vk_next");Pump();
+        ScreenGoHome();Pump();
         assert(on_home);assert(Timers()==baseline);assert(PowerPolicy::GetInstance().idle());
     }
-    std::printf("PASS: telemetry/peak/no-GPU layout, hardware pagination, PTT initialization/release/limit/cancel, bounded mono PCM, 60 navigation cycles; timers=%d\n",baseline);
+    std::printf("PASS: 480x800 usage dashboard, session selection, per-session settings, volume pagination, BOOT casual/current-session PTT, bounded mono PCM, 60 navigation cycles; timers=%d\n",baseline);
     Validate(lv_screen_active());
 }

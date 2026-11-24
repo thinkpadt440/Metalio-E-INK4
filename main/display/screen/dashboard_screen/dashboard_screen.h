@@ -1,29 +1,22 @@
 #pragma once
 
 #include <cstdint>
-#include "lvgl.h"
 
-enum class DashboardGpu { Unknown, Absent, Present };
+#include "lvgl.h"
 
 struct DashboardMetrics {
     bool valid = false;
-    double token_rate = 0;
-    double instant_rate = 0;
-    uint32_t generated_tokens = 0;
-    uint32_t context_tokens = 0;
-    uint32_t context_capacity = 0;
-    uint32_t ttft_ms = 0;
-    double elapsed_seconds = 0;
-    uint32_t active_tasks = 0;
-    uint32_t total_slots = 0;
-    DashboardGpu gpu = DashboardGpu::Unknown;
-    double vram_used_gib = 0;
-    double vram_total_gib = 0;
+    uint32_t sessions = 0;
+    uint32_t messages = 0;
+    uint64_t total_tokens = 0;
+    uint32_t active_days = 0;
+    char peak_hour[16] = "--";
+    char favorite_model[48] = "--";
 };
 
 class DashboardScreen {
 public:
     static lv_obj_t* Create();
-    // A future transport can publish a snapshot from its worker; the UI polls without network I/O.
+    // Metrics are published by a future Harness transport and read by the UI timer.
     static void UpdateMetrics(const DashboardMetrics& metrics);
 };
