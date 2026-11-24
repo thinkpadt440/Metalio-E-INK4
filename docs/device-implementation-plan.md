@@ -1,5 +1,7 @@
 # Metalio E-Ink4 设备端功能实现计划
 
+真实后端接入在 feature/companion 执行；feature/dashboard 暂用于脱机演示，见 [演示指南](offline-demo-guide.md)。本计划后续以 companion 中保留的开发基线为准。
+
 本计划以 [接口约定 v1](device-harness-api-v1.md) 和 [完整报文示例 v1](device-harness-api-v1-examples.md) 为唯一协议依据，覆盖 Dashboard、Session/消息、模型和授权、BOOT 录音上传、实时任务、审批与断线恢复。实现按下列顺序逐阶段验收；接口变更先更新协议文档，再改固件。
 
 ## 当前基线

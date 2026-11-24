@@ -1,27 +1,18 @@
-# 自定义 UI 离线检查
+# 脱机演示 UI 离线检查
 
-在 WSL/Linux 中，使用项目实际页面源码、LVGL 与 Flash 字体包渲染 Metalio E-Ink4 的
-480×800 竖屏逻辑画布。不需要设备或显示服务器；需要 CMake 和主机 C/C++ 编译器。
+在 WSL/Linux 中，使用项目实际页面源码、LVGL 与 Flash 字体包渲染 Metalio E-Ink4 的480×800竖屏逻辑画布。
 
-运行命令：
+~~~bash
 cmake -S tools/ui_preview -B build/ui-preview-host
 cmake --build build/ui-preview-host -j 8
 cd build/ui-preview-host
 ./preview
+~~~
 
-成功时输出 PASS，并生成 dashboard、最近 Session 列表、聊天页、模型选择器和 BOOT
-录音状态的 PPM 图片。检查包括六项统计字段与数字格式、周期选择、会话选择、模型和授权
-按 Session 分别保留、音量键分页、固定闲聊入口、BOOT 录音流程、页面边界和 60 次导航后的
-定时器清理。预览状态栏为固定占位值。
+成功输出 PASS，生成 Dashboard、两个 Session、聊天、模型/授权选择、审批、通过后执行/检查/完成、拒绝、BOOT 录音与预设回复的 PPM 图片。
 
-离线测试不能验证墨水屏波形、局刷、触摸硬件、充电、网络连接和休眠唤醒。Session、模型和
-授权选择仍使用本地示例；接入 Harness 后应由服务端提供真实列表和会话数据。首页没有真实
-统计数据时显示 --。HOME 默认分发和硬件按键仍需真机检查。
+覆盖不同统计周期、按会话保存设置、历史十屏上限、精确两秒审批状态机、实际盖板键名映射、重复决定、批准与拒绝、录音控制器异常路径、待机停止以及60次页面往返的定时器/电源占用释放。状态栏为预览占位值。
 
-stubs/ 只替代硬件、Flash 映射与 RTOS 接口；字体加载及页面实现直接编译项目源码。
-主机渲染文件不会参与 ESP-IDF 固件构建。
+stubs/ 替代硬件、Flash映射与RTOS接口；页面、字体加载、录音控制器和有界PCM缓冲均使用项目代码。该检查不代表真实麦克风、触摸、墨水屏刷新或电源硬件已经验证。演示数据和回复均为脚本，与真实后端接入分支 feature/companion 分开。
 
-PTT 控制器直接编译 harness_voice.cc，主机模拟任务队列、AudioService 和电源活动计数。
-另使用真实的 LocalRecordingBuffer 检查双声道抽取麦克风、容量上限、极值峰值和边界哨兵。
-覆盖初始化前/中松手、启动/输入失败、30 秒上限、离页和待机停止；不代表真实 I2S 采集测试通过。
-Dashboard 样例图使用测试输入，固件无统计数据时仍显示待接入状态。
+演示步骤见 [脱机演示指南](../../docs/offline-demo-guide.md)。主机文件不参与ESP-IDF固件构建。

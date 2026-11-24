@@ -10,6 +10,7 @@
 #include "settings_screen/settings_screen.h"
 #include "standby_screen/standby_screen.h"
 #include "harness_screen/harness_screen.h"
+#include "harness_screen/offline_demo.h"
 #include "vk_key_handler.h"
 
 namespace {
@@ -19,13 +20,15 @@ std::mutex s_metrics_mutex;
 DashboardMetrics s_metrics;
 
 struct DashboardUi {
+    offline_demo::KeepAwake awake;
     lv_obj_t* screen = nullptr;
     lv_obj_t* values[6] = {};
     lv_obj_t* range_buttons[kRangeCount] = {};
-    lv_obj_t* data_status = nullptr;
     lv_timer_t* timer = nullptr;
     int selected_range = 0;
 };
+
+void RefreshMetrics(DashboardUi* ui);
 
 void SetSelectedRange(DashboardUi* ui, int selected) {
     ui->selected_range = selected;
@@ -46,6 +49,7 @@ void SelectRange(int selected) {
         : static_cast<DashboardUi*>(lv_obj_get_user_data(screen));
     if (ui == nullptr || ui->screen != screen) return;
     SetSelectedRange(ui, selected);
+    RefreshMetrics(ui);
 }
 
 void OnRangeAll(lv_event_t*) { SelectRange(0); }
@@ -53,13 +57,19 @@ void OnRange30d(lv_event_t*) { SelectRange(1); }
 void OnRange7d(lv_event_t*) { SelectRange(2); }
 
 void FormatCount(uint64_t value, char* out, size_t capacity) {
-    char raw[24];
-    std::snprintf(raw, sizeof(raw), "%llu", static_cast<unsigned long long>(value));
-    const size_t length = std::strlen(raw);
+    if (capacity == 0) return;
+    // ESP32's configured Newlib nano formatter does not support %llu.
+    // Convert decimal digits directly, then add thousands separators.
+    char reversed[20];  // UINT64_MAX has 20 decimal digits.
+    size_t length = 0;
+    do {
+        reversed[length++] = static_cast<char>('0' + value % 10);
+        value /= 10;
+    } while (value != 0);
     size_t pos = 0;
     for (size_t i = 0; i < length && pos + 1 < capacity; ++i) {
         if (i != 0 && (length - i) % 3 == 0 && pos + 1 < capacity) out[pos++] = ',';
-        if (pos + 1 < capacity) out[pos++] = raw[i];
+        if (pos + 1 < capacity) out[pos++] = reversed[length - 1 - i];
     }
     out[pos] = '\0';
 }
@@ -83,9 +93,18 @@ void RefreshMetrics(DashboardUi* ui) {
     }
 
     if (!metrics.valid) {
-        for (lv_obj_t* value : ui->values) product_ui::SetText(value, "--");
-        product_ui::SetText(ui->data_status, "Harness 统计接口待接入");
-        return;
+        const int range = ui->selected_range;
+        metrics.valid = true;
+        const uint32_t sessions[] = {53, 28, 9};
+        const uint32_t messages[] = {5980, 2486, 412};
+        const uint64_t tokens[] = {8268400, 3194800, 652600};
+        const uint32_t days[] = {68, 22, 6};
+        metrics.sessions = sessions[range];
+        metrics.messages = messages[range] + offline_demo::State().added_messages;
+        metrics.total_tokens = tokens[range] + offline_demo::State().added_tokens;
+        metrics.active_days = days[range];
+        std::snprintf(metrics.peak_hour, sizeof(metrics.peak_hour), "%s", "10:00");
+        std::snprintf(metrics.favorite_model, sizeof(metrics.favorite_model), "%s", "DeepSeek V4.1-Pro");
     }
 
     char text[48];
@@ -99,8 +118,9 @@ void RefreshMetrics(DashboardUi* ui) {
     product_ui::SetText(ui->values[3], text);
     product_ui::SetText(ui->values[4], metrics.peak_hour[0] == '\0' ? "--" : metrics.peak_hour);
     product_ui::SetText(ui->values[5],
-                        metrics.favorite_model[0] == '\0' ? "--" : metrics.favorite_model);
-    product_ui::SetText(ui->data_status, "统计周期可切换 · 数据由 Harness 提供");
+                        metrics.favorite_model[0] == '\0' ? "--" :
+                        std::strcmp(metrics.favorite_model, "DeepSeek V4.1-Pro") == 0
+                            ? "DeepSeek\nV4.1-Pro" : metrics.favorite_model);
 }
 
 void OnTimer(lv_timer_t* timer) {
@@ -137,7 +157,7 @@ lv_obj_t* CreateMetricCard(lv_obj_t* parent, int x, int y, int width, int height
                                    product_ui::HeadingFont());
     lv_obj_set_height(*value_out, 42);
     lv_label_set_long_mode(*value_out, LV_LABEL_LONG_DOT);
-    product_ui::Label(card, 12, height - 34, width - 24, note);
+    if (note[0] != '\0') product_ui::Label(card, 12, height - 34, width - 24, note);
     return card;
 }
 
@@ -179,7 +199,7 @@ lv_obj_t* DashboardScreen::Create() {
     CreateMetricCard(body, 0, first_y, card_width, card_height,
                      "会话数", "当前周期", &ui->values[0]);
     CreateMetricCard(body, card_width + gap, first_y, card_width, card_height,
-                     "消息数", "用户消息数", &ui->values[1]);
+                     "消息数", "用户与助手", &ui->values[1]);
     CreateMetricCard(body, 0, first_y + card_height + gap, card_width, card_height,
                      "总 Token", "输入和输出", &ui->values[2]);
     CreateMetricCard(body, card_width + gap, first_y + card_height + gap,
@@ -189,11 +209,12 @@ lv_obj_t* DashboardScreen::Create() {
                      "高峰时段", "请求最高时段", &ui->values[4]);
     CreateMetricCard(body, card_width + gap, first_y + 2 * (card_height + gap),
                      card_width, card_height, "常用模型",
-                     "当前周期", &ui->values[5]);
+                     "", &ui->values[5]);
     lv_obj_set_style_text_font(ui->values[5], fontpack_lv_font_ui(), 0);
+    lv_label_set_long_mode(ui->values[5], LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_line_space(ui->values[5], 4, 0);
+    lv_obj_set_height(ui->values[5], card_height - 50);
 
-    ui->data_status = product_ui::Label(body, 0, first_y + 3 * card_height + 2 * gap + 8,
-                                        width, "Harness 统计接口待接入");
     const int button_y = height - 72;
     const int button_width = (width - 12) / 2;
     product_ui::Button(body, 0, button_y, button_width, 58, "进入助手",
