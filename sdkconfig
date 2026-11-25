@@ -596,6 +596,13 @@ CONFIG_PARTITION_TABLE_MD5=y
 # end of Partition Table
 
 #
+# Harness Companion
+#
+CONFIG_HARNESS_SERVER_URL=""
+CONFIG_HARNESS_DEVICE_ID=""
+# end of Harness Companion
+
+#
 # Xiaozhi Assistant
 #
 # CONFIG_FLASH_NONE_ASSETS is not set

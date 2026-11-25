@@ -185,7 +185,7 @@ ack目标2秒内，10秒未到=结果未知，不擅自新建任务。按device_
 
 当前仓库的components/esp-ml307/include/web_socket.h中，receive_buffer_size_默认2048字节；src/web_socket.cc据此限制接收单帧payload。这是现有底层默认值，协议仍约定完整JSON消息≤8192字节、每个Binary音频消息≤4096字节。单帧、完整WS消息和TCP读取回调是不同边界，不能把一次回调当一条完整业务消息。
 
-- 固件创建Harness连接后、Connect前调用SetReceiveBufferSize(8192)，使接收单帧payload至少支持8192字节；接收缓存还须容纳WS帧头和TCP拆包/合包。后端可将上限内JSON发为一个文本帧，不要求为旧2KB默认值额外切业务报文。
+- 固件创建Harness连接后、Connect前调用SetReceiveBufferSize(8192)与SetMessageSizeLimit(8192)，分别设置单帧payload及完整重组消息上限；接收缓存还须容纳WS帧头和TCP拆包/合包。后端可将上限内JSON发为一个文本帧，不要求为旧2KB默认值额外切业务报文。
 - WS continuation帧应由底层重组；完整重组后的JSON仍限8192字节，不能只限制各帧。分片累积状态改为连接实例持有，关闭/重连时清空；解析JSON使用实际长度，不能假定回调数据以NUL结尾。
 - 4096字节音频是设备向服务端发送的Binary消息，不是TCP分包大小，也不因旧接收默认值自动改成2048字节。单帧接收配置不会替代完整消息、上传总量和发送队列的边界检查。
 - 联调覆盖超过2048字节至8192字节的UTF-8 JSON、超过8192字节拒绝、continuation/TCP拆包合包、分片中断后重连；这些是固件适配要求，尚未表示当前底层已改好。报文格式不变。

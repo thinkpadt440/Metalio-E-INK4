@@ -175,7 +175,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
         } else {
             // Parse JSON data
             // ESP_LOGI(TAG, "Received JSON data: %s", data);
-            auto root = cJSON_Parse(data);
+            auto root = cJSON_ParseWithLength(data, len);
             auto type = cJSON_GetObjectItem(root, "type");
             if (cJSON_IsString(type)) {
                 if (strcmp(type->valuestring, "hello") == 0) {
@@ -186,7 +186,8 @@ bool WebsocketProtocol::OpenAudioChannel() {
                     }
                 }
             } else {
-                ESP_LOGE(TAG, "Missing message type, data: %s", data);
+                ESP_LOGE(TAG, "Invalid JSON or missing message type (%u bytes)",
+                         static_cast<unsigned>(len));
             }
             cJSON_Delete(root);
         }

@@ -53,13 +53,18 @@ void OnRange30d(lv_event_t*) { SelectRange(1); }
 void OnRange7d(lv_event_t*) { SelectRange(2); }
 
 void FormatCount(uint64_t value, char* out, size_t capacity) {
-    char raw[24];
-    std::snprintf(raw, sizeof(raw), "%llu", static_cast<unsigned long long>(value));
-    const size_t length = std::strlen(raw);
+    if (capacity == 0) return;
+    // The configured Newlib nano formatter cannot print 64-bit integers.
+    char reversed[20];
+    size_t length = 0;
+    do {
+        reversed[length++] = static_cast<char>('0' + value % 10);
+        value /= 10;
+    } while (value != 0);
     size_t pos = 0;
     for (size_t i = 0; i < length && pos + 1 < capacity; ++i) {
         if (i != 0 && (length - i) % 3 == 0 && pos + 1 < capacity) out[pos++] = ',';
-        if (pos + 1 < capacity) out[pos++] = raw[i];
+        if (pos + 1 < capacity) out[pos++] = reversed[length - 1 - i];
     }
     out[pos] = '\0';
 }

@@ -1,5 +1,9 @@
 # Define source files
-set(SOURCES "audio/audio_codec.cc"
+set(SOURCES "harness/transport.cc"
+            "harness/client.cc"
+            "harness/socket_io.cc"
+            "harness/service.cc"
+            "audio/audio_codec.cc"
             "audio/audio_service.cc"
             "audio/codecs/no_audio_codec.cc"
             "audio/codecs/box_audio_codec.cc"

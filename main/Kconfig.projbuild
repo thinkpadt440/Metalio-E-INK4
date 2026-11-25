@@ -1,3 +1,15 @@
+menu "Harness Companion"
+    config HARNESS_SERVER_URL
+        string "Fixed HTTP(S) server origin (empty disables connection)"
+        default ""
+        help
+            Example format: http://host:port. Supply the real backend address.
+            No API path, username, password or token. WS uses the same origin.
+    config HARNESS_DEVICE_ID
+        string "Device identifier (empty derives from MAC)"
+        default ""
+endmenu
+
 menu "Xiaozhi Assistant"
 
 choice

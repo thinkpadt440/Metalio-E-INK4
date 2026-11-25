@@ -8,6 +8,7 @@
 
 #include "boot_key_handler.h"
 #include "harness_voice.h"
+#include "harness/service.h"
 #include "haptic_feedback.h"
 #include "product_ui.h"
 #include "standby_screen/standby_screen.h"
@@ -154,7 +155,7 @@ void Render(HarnessUi* ui) {
     const bool recording = voice.phase == harness_voice::Phase::Recording;
     product_ui::SetText(ui->session_title, kSessions[ui->session_index].name);
     const char* status = preparing ? "接收（准备录音）"
-        : recording ? "接收（录音中）" : "接收（未连接）";
+        : recording ? "接收（录音中）" : harness::ConnectionStatusLabel();
     product_ui::SetText(ui->status, status);
 
     char page[24];
@@ -168,7 +169,7 @@ void Render(HarnessUi* ui) {
     } else if (voice.phase == harness_voice::Phase::Complete) {
         char text[160];
         std::snprintf(text, sizeof(text),
-                      "本次录音 %.1f 秒。\n\n当前 Harness 服务未连接，录音尚未发送。",
+                      "本次录音 %.1f 秒。\n\n录音上传功能待接入，尚未发送。",
                       voice.duration_ms / 1000.0);
         product_ui::SetText(ui->message, text);
     } else if (voice.phase == harness_voice::Phase::Error) {

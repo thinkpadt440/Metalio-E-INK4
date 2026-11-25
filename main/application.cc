@@ -1,3 +1,4 @@
+#include "harness/service.h"
 #include "application.h"
 #include "board.h"
 #include "power_policy.h"
@@ -1322,6 +1323,7 @@ void Application::Start() {
 
     SetDeviceState(kDeviceStateIdle);
     ESP_LOGD(TAG, "Boot complete; voice/audio deferred until Xiaozhi screen");
+    harness::StartService();
     FlushPendingXiaozhiVoice();
 }
 

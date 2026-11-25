@@ -633,7 +633,7 @@ Accept: application/json
 
 ## 4. WebSocket完整报文
 
-以下沿用完整JSON消息≤8192字节、每个Binary音频消息≤4096字节的约定。当前2.0.63分支的WebSocket底层默认接收单帧payload为2048字节，固件须在Connect前调用SetReceiveBufferSize(8192)，并实现重组后限长、分片状态随连接清理及按实际长度解析；详见[接口约定4.1.1](device-harness-api-v1.md#411-基于2063的ws底层适配)。后端可发送上限内单文本帧，不必按2KB拆业务消息。WS帧头不计入JSON/Binary payload上限；一次TCP回调不等于一条WS消息。
+以下沿用完整JSON消息≤8192字节、每个Binary音频消息≤4096字节的约定。当前2.0.63分支的WebSocket底层默认接收单帧payload为2048字节，固件须在Connect前调用SetReceiveBufferSize(8192)与SetMessageSizeLimit(8192)，并实现重组后限长、分片状态随连接清理及按实际长度解析；详见[接口约定4.1.1](device-harness-api-v1.md#411-基于2063的ws底层适配)。后端可发送上限内单文本帧，不必按2KB拆业务消息。WS帧头不计入JSON/Binary payload上限；一次TCP回调不等于一条WS消息。
 
 ### W01 · hello（设备→后端）
 

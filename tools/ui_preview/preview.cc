@@ -21,6 +21,7 @@
 #include "application.h"
 #include "power_policy.h"
 #include "harness_screen/harness_voice.h"
+#include "harness/service.h"
 #include "local_recording_buffer.h"
 
 static std::vector<unsigned char> font_blob;
@@ -150,6 +151,17 @@ int main() {
     assert(Find(lv_screen_active(),"deepseek-flash"));
     Save("dashboard-sample");
     Click("30天");Click("7天");Click("全部");
+    DashboardMetrics bounds;
+    bounds.valid=true;bounds.sessions=0;bounds.messages=UINT32_MAX;bounds.active_days=999;
+    DashboardScreen::UpdateMetrics(bounds);Pump();Pump();
+    assert(Find(lv_screen_active(),"0"));
+    assert(Find(lv_screen_active(),"4,294,967,295"));
+    assert(Find(lv_screen_active(),"999"));
+    bounds.sessions=1000;bounds.messages=1000000;bounds.active_days=1001;
+    DashboardScreen::UpdateMetrics(bounds);Pump();Pump();
+    assert(Find(lv_screen_active(),"1,000"));
+    assert(Find(lv_screen_active(),"1,000,000"));
+    assert(Find(lv_screen_active(),"1,001"));
     DashboardScreen::UpdateMetrics(DashboardMetrics{});Pump();Pump();
     assert(Find(lv_screen_active(),"Harness 统计接口待接入"));
     int baseline=Timers();
@@ -165,6 +177,11 @@ int main() {
     Click("E-INK4 固件 UI 改版");
     Validate(lv_screen_active());Save("assistant-chat-page-1");
     assert(Find(lv_screen_active(),"接收（未连接）"));
+    harness::PreviewConnectionLabel()="接收（同步中）";Pump();
+    assert(Find(lv_screen_active(),"接收（同步中）"));
+    harness::PreviewConnectionLabel()="接收（已连接）";Pump();
+    assert(Find(lv_screen_active(),"接收（已连接）"));
+    harness::PreviewConnectionLabel()="接收（未连接）";Pump();
     assert(Find(lv_screen_active(),"模型\n服务端默认"));
     assert(Find(lv_screen_active(),"授权级别\n标准"));
     assert(!Find(lv_screen_active(),"上一页") && !Find(lv_screen_active(),"下一页"));
