@@ -87,6 +87,19 @@ static lv_obj_t* Find(lv_obj_t* root,const char* text) {
     for(unsigned i=0;i<lv_obj_get_child_count(root);i++)if(auto* found=Find(lv_obj_get_child(root,i),text))return found;
     return nullptr;
 }
+static void CheckKeyHints(const char* middle, const char* right) {
+    auto* home = Find(lv_screen_active(), "主页");
+    assert(home);
+    auto* bar = lv_obj_get_parent(home);
+    assert(lv_obj_get_y(bar) + lv_obj_get_height(bar) == 800);
+    assert(lv_obj_get_child_count(bar) == 3);
+    const char* expected[] = {"主页", middle, right};
+    for (int i = 0; i < 3; ++i) {
+        auto* label = lv_obj_get_child(bar, i);
+        assert(std::strcmp(lv_label_get_text(label), expected[i]) == 0);
+        assert(lv_obj_get_x(label) + lv_obj_get_width(label) / 2 == 80 + 160 * i);
+    }
+}
 static void Click(const char* text) {
     auto* label=Find(lv_screen_active(),text);assert(label);
     auto* button=lv_obj_get_parent(label);assert(!lv_obj_has_state(button,LV_STATE_DISABLED));
@@ -112,7 +125,7 @@ static void Validate(lv_obj_t* root) {
     }
     if (HarnessScreen::IsActive() && lv_obj_check_type(root,&lv_label_class) && lv_obj_get_y(root)==60) {
         auto* parent=lv_obj_get_parent(root);
-        assert(lv_obj_get_y(root)+lv_obj_get_height(root) <= lv_obj_get_height(parent)-134);
+        assert(lv_obj_get_y(root)+lv_obj_get_height(root) <= lv_obj_get_height(parent)-76);
     }
     if (HarnessScreen::IsActive() && lv_obj_check_type(root,&lv_label_class) && lv_obj_get_y(root)==58) {
         auto* parent=lv_obj_get_parent(root);
@@ -157,6 +170,7 @@ int main() {
     State().Reset();
 
     ScreenLoadReplace(DashboardScreen::Create());Pump();Validate(lv_screen_active());
+    CheckKeyHints("—", "—");
     Save("dashboard");
     assert(Find(lv_screen_active(),"53"));
     assert(Find(lv_screen_active(),"5,980"));
@@ -185,10 +199,11 @@ int main() {
     int baseline=Timers();
 
     assert(registry["home"].on_boot_click());Pump();
-    Validate(lv_screen_active());Save("assistant-sessions");
+    Validate(lv_screen_active());CheckKeyHints("—", "—");Save("assistant-sessions");
     assert(Find(lv_screen_active(),"日常闲聊") && Find(lv_screen_active(),"编码助手"));
     assert(!Find(lv_screen_active(),"离线演示") && !Find(lv_screen_active(),"示例"));
-    Click("编码助手");Validate(lv_screen_active());Save("assistant-coder");
+    Click("编码助手");Validate(lv_screen_active());
+    CheckKeyHints("上一页", "下一页");Save("assistant-coder");
     assert(Find(lv_screen_active(),"模型\nV4.1-Pro"));
     assert(Find(lv_screen_active(),"授权级别\n完全访问"));
     assert(Find(lv_screen_active(),"2 / 2"));
@@ -196,30 +211,31 @@ int main() {
     Key("vk_prev");assert(Find(lv_screen_active(),"1 / 2"));
     Key("vk_next");assert(Find(lv_screen_active(),"2 / 2"));
     Key("vk_next");assert(Find(lv_screen_active(),"2 / 2"));
-    Click("模型\nV4.1-Pro");Validate(lv_screen_active());
+    Click("模型\nV4.1-Pro");Validate(lv_screen_active());CheckKeyHints("—", "—");
     assert(Find(lv_screen_active(),"DeepSeek V4.1-Flash"));
     assert(Find(lv_screen_active(),"DeepSeek V4.1-Pro"));Save("assistant-model-picker");
-    Click("DeepSeek V4.1-Flash");assert(Find(lv_screen_active(),"模型\nV4.1-Flash"));
-    Click("授权级别\n完全访问");Save("assistant-authorization-picker");
+    Click("取消");CheckKeyHints("上一页", "下一页");
+    Click("模型\nV4.1-Pro");Click("DeepSeek V4.1-Flash");assert(Find(lv_screen_active(),"模型\nV4.1-Flash"));
+    Click("授权级别\n完全访问");CheckKeyHints("—", "—");Save("assistant-authorization-picker");
     Click("请求审批");assert(coder.phase==Phase::Thinking);
     assert(!Find(lv_screen_active(),"需要你的批准"));
     Wait(2100);Validate(lv_screen_active());
     assert(coder.phase==Phase::WaitingApproval);
     assert(Find(lv_screen_active(),"需要你的批准"));
     assert(!Find(lv_screen_active(),"授权级别\n请求审批"));
-    Save("assistant-approval");
+    CheckKeyHints("仅本次允许", "拒绝");Save("assistant-approval");
     auto& app=Application::GetInstance();auto& audio=app.GetAudioService();
     unsigned starts=audio.starts;
     boot_held=true;registry[active].on_boot_long_press();Pump();
     assert(audio.starts==starts);boot_held=false;registry[active].on_boot_press_up();Pump();
     // Approval actions swapped after device feedback: PREV approves, NEXT rejects.
     Key("vk_prev");assert(coder.phase==Phase::Executing);
-    Save("assistant-approved");
+    CheckKeyHints("上一页", "下一页");Save("assistant-approved");
     Wait(2100);assert(coder.phase==Phase::Testing);Save("assistant-testing");
     Wait(2100);assert(coder.phase==Phase::Complete);Validate(lv_screen_active());Save("assistant-complete");
     assert(Find(lv_screen_active(),"接收（已完成）"));
     Click("授权级别\n请求审批");Click("请求审批");Wait(2100);
-    Key("vk_next");assert(coder.phase==Phase::Rejected);
+    Key("vk_next");assert(coder.phase==Phase::Rejected);CheckKeyHints("上一页", "下一页");
     Wait(4500);assert(coder.phase==Phase::Rejected);Save("assistant-rejected");
 
     // Scenario/settings survive returning home. Reset gives a repeatable presentation.
@@ -230,10 +246,11 @@ int main() {
     assert(Find(lv_screen_active(),"模型\nV4.1-Flash"));
     Save("assistant-casual");
     boot_held=true;registry[active].on_boot_long_press();Pump();Wait(200);
-    assert(audio.active);Validate(lv_screen_active());Save("assistant-casual-recording");
+    assert(audio.active);Validate(lv_screen_active());
+    CheckKeyHints("—", "—");Save("assistant-casual-recording");
     audio.Feed(16000);boot_held=false;registry[active].on_boot_press_up();Pump();Wait(200);
     assert(!audio.active && harness_voice::Snapshot().duration_ms==1000);
-    assert(State().sessions[kCasual].phase==Phase::Transcribing);
+    assert(State().sessions[kCasual].phase==Phase::Transcribing);CheckKeyHints("上一页", "下一页");
     Wait(1100);assert(State().sessions[kCasual].phase==Phase::Thinking);
     Save("assistant-casual-transcribed");
     Wait(2100);assert(State().sessions[kCasual].phase==Phase::Complete);
@@ -280,5 +297,5 @@ int main() {
     }
     Click("设置");assert(PowerPolicy::GetInstance().idle());ScreenGoHome();Pump();
     Validate(lv_screen_active());
-    std::printf("PASS: offline dashboard periods, two persistent sessions, exactly 2s approval, physical left approve/right reject, scripted execution/rejection, PTT/canned reply, bounded history, 60 navigation cycles; timers=%d\n",baseline);
+    std::printf("PASS: offline dashboard periods, two persistent sessions, exactly 2s approval, physical left approve/right reject, scripted execution/rejection, PTT/canned reply, contextual key hints, bounded history, 60 navigation cycles; timers=%d\n",baseline);
 }

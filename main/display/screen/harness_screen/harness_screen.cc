@@ -36,6 +36,7 @@ struct HarnessUi {
     lv_obj_t* picker_panel = nullptr;
     lv_obj_t* picker_title = nullptr;
     lv_obj_t* picker_options[2] = {};
+    product_ui::KeyHints key_hints;
     lv_timer_t* timer = nullptr;
     View view = View::Sessions;
     Picker picker = Picker::None;
@@ -56,6 +57,15 @@ void Visible(lv_obj_t* object, bool visible) {
 }
 void SetButtonText(lv_obj_t* button, const char* text) {
     product_ui::SetText(lv_obj_get_child(button, 0), text);
+}
+void RenderKeyHints(HarnessUi* ui, bool approval = false) {
+    if (approval) {
+        ui->key_hints.SetActions("仅本次允许", "拒绝");
+    } else if (ui->view == View::Chat && ui->picker == Picker::None && ui->record_target < 0) {
+        ui->key_hints.SetActions("上一页", "下一页");
+    } else {
+        ui->key_hints.SetActions("—", "—");
+    }
 }
 void RenderPicker(HarnessUi* ui) {
     if (ui->picker == Picker::None) return;
@@ -93,6 +103,7 @@ void Render(HarnessUi* ui) {
     product_ui::SetText(ui->status, preparing ? "接收（准备录音）" :
         recording ? "接收（录音中）" : ui->recording_error ? "接收（录音失败）" : Status(s.phase));
     s_approval_visible.store(approval);
+    RenderKeyHints(ui, approval);
     Visible(ui->approval_panel, approval);
     Visible(ui->message, !approval);
     Visible(ui->model_button, !approval);
@@ -142,6 +153,7 @@ void ShowSessions(HarnessUi* ui) {
     Visible(ui->picker_panel, false);
     Visible(ui->chat_panel, false);
     Visible(ui->sessions_panel, true);
+    RenderKeyHints(ui);
 }
 void EnterChat(HarnessUi* ui, int index) {
     ui->session_index = index;
@@ -165,12 +177,17 @@ void OpenPicker(Picker picker) {
         offline_demo::Busy(offline_demo::State().sessions[ui->session_index])) return;
     ui->picker = picker;
     Visible(ui->picker_panel, true);
+    RenderKeyHints(ui);
     RenderPicker(ui);
 }
 void OnModelPicker(lv_event_t*) { OpenPicker(Picker::Model); }
 void OnAuthorizationPicker(lv_event_t*) { OpenPicker(Picker::Authorization); }
 void OnPickerCancel(lv_event_t*) {
-    if (auto* ui = ActiveUi()) { ui->picker = Picker::None; Visible(ui->picker_panel, false); }
+    if (auto* ui = ActiveUi()) {
+        ui->picker = Picker::None;
+        Visible(ui->picker_panel, false);
+        Render(ui);
+    }
 }
 void SelectPickerOption(int index) {
     auto* ui = ActiveUi();
@@ -319,7 +336,7 @@ lv_obj_t* HarnessScreen::Create() {
     const auto status = ScreenCreateStatusBar(ui->screen);
     const int width = LV_HOR_RES - 32;
     const int top = status.height + 12;
-    const int height = LV_VER_RES - top;
+    const int height = LV_VER_RES - top - product_ui::kKeyHintsHeight - 8;
     auto* body = product_ui::Box(ui->screen, 16, top, width, height);
     ui->sessions_panel = product_ui::Box(body, 0, 0, width, height);
     product_ui::Label(ui->sessions_panel, 0, 0, width - 130, "最近活动", product_ui::HeadingFont());
@@ -350,11 +367,11 @@ lv_obj_t* HarnessScreen::Create() {
     product_ui::Label(ui->approval_panel, 0, 0, width, "需要你的批准", product_ui::HeadingFont());
     product_ui::Label(ui->approval_panel, 0, 60, width,
         "编码助手申请执行\n\n修改统计页面，补充周期筛选检查，并运行项目构建。\n\n范围：当前固件项目\n授权：仅本次操作\n\n拒绝后将停止本次任务。");
-    product_ui::Label(ui->approval_panel, 0, height - 82 - 134, width, "HOME 旁：左键通过，右键拒绝");
     product_ui::Button(ui->approval_panel, 0, height - 82 - 76, button_width, 76, "仅本次允许", OnApprove, true);
     product_ui::Button(ui->approval_panel, button_width + 10, height - 82 - 76, button_width, 76, "拒绝", OnReject);
     Visible(ui->approval_panel, false);
     CreatePicker(ui, width, height);
+    ui->key_hints = product_ui::CreateKeyHints(ui->screen);
     ui->timer = lv_timer_create(OnTimer, 100, ui);
     lv_obj_add_event_cb(ui->screen, OnUnload, LV_EVENT_SCREEN_UNLOADED, ui);
     lv_obj_add_event_cb(ui->screen, OnDelete, LV_EVENT_DELETE, ui);

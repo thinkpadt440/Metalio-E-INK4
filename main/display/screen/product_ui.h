@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstring>
+#include <initializer_list>
 
 #include "display_orient.h"
 #include "fontpack_lvgl.h"
@@ -58,6 +59,39 @@ inline void SetText(lv_obj_t* label, const char* text) {
     if (std::strcmp(lv_label_get_text(label), text) != 0) {
         lv_label_set_text(label, text);
     }
+}
+
+constexpr int kKeyHintsHeight = 48;
+
+struct KeyHints {
+    lv_obj_t* middle = nullptr;
+    lv_obj_t* right = nullptr;
+
+    void SetActions(const char* middle_text, const char* right_text) const {
+        SetText(middle, middle_text);
+        SetText(right, right_text);
+    }
+};
+
+inline KeyHints CreateKeyHints(lv_obj_t* screen) {
+    const int width = LV_HOR_RES;
+    const int column = width / 3;
+    auto* bar = Box(screen, 0, LV_VER_RES - kKeyHintsHeight, width, kKeyHintsHeight);
+    lv_obj_set_style_border_color(bar, lv_color_black(), 0);
+    lv_obj_set_style_border_width(bar, 1, 0);
+    lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_TOP, 0);
+
+    // Match the left-to-right positions of the three bezel keys.
+    auto* home = Label(bar, 0, 0, column, "主页");
+    auto* middle = Label(bar, 0, 0, column, "—");
+    auto* right = Label(bar, 0, 0, column, "—");
+    for (auto* label : {home, middle, right}) {
+        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    }
+    lv_obj_align(home, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_align(middle, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(right, LV_ALIGN_RIGHT_MID, 0, 0);
+    return {middle, right};
 }
 
 inline lv_obj_t* Button(lv_obj_t* parent, int x, int y, int width, int height,

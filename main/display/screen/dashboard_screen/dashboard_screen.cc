@@ -183,7 +183,7 @@ lv_obj_t* DashboardScreen::Create() {
     const EpdStatusBar status = ScreenCreateStatusBar(ui->screen);
     const int width = LV_HOR_RES - 32;
     const int top = status.height + 12;
-    const int height = LV_VER_RES - top;
+    const int height = LV_VER_RES - top - product_ui::kKeyHintsHeight;
     lv_obj_t* body = product_ui::Box(ui->screen, 16, top, width, height);
 
     product_ui::Label(body, 0, 0, 190, "使用概览", product_ui::HeadingFont());
@@ -222,6 +222,7 @@ lv_obj_t* DashboardScreen::Create() {
     product_ui::Button(body, button_width + 12, button_y, button_width, 58, "设置",
                        OnSettings);
 
+    product_ui::CreateKeyHints(ui->screen);
     RefreshMetrics(ui);
     ui->timer = lv_timer_create(OnTimer, 1000, ui);
     lv_obj_add_event_cb(ui->screen, OnDelete, LV_EVENT_DELETE, ui);
