@@ -1,4 +1,5 @@
 #include "harness/client.h"
+#include "harness/catalog.h"
 #include <cJSON.h>
 #include <functional>
 #include <iostream>
@@ -73,6 +74,41 @@ int main(){
             auto c=TestConfig();c.base_url=url;Check(!ValidConfig(c),"invalid URL accepted");
         }
         auto c=TestConfig();c.device_id="bad\nid";Check(!ValidConfig(c),"header injection accepted");
+    });
+    test("settings normalize HTTP(S) origins without accepting paths", [] {
+        auto origin = NormalizeServerOrigin(" \t http://192.168.8.51:8780/\r\n");
+        Check(origin == "http://192.168.8.51:8780" && ValidServerOrigin(origin),
+              "LAN origin did not normalize");
+        Check(ValidServerOrigin(NormalizeServerOrigin("https://assistant.local/")), "HTTPS origin rejected");
+        Check(NormalizeServerOrigin(" \t").empty(), "blank origin must allow disabling");
+        for (const auto* invalid : {"ws://host/api/v1/ws", "http://host/api/v1/", "http://host//",
+                                    "http://host:99999", "https://", "http://user@host/",
+                                    "http://host?server=1", "http://my host", "http://host#anchor"}) {
+            Check(!ValidServerOrigin(NormalizeServerOrigin(invalid)), "invalid saved origin accepted");
+        }
+    });
+    test("recent sessions use one bounded request", [] {
+        FakeIo io;
+        const auto page = [](int count) {
+            std::string body = "{\"items\":[";
+            for (int i = 0; i < count; ++i) {
+                if (i) body += ',';
+                body += "{\"id\":\"sess_" + std::to_string(i) + "\","
+                        "\"title\":\"Recent\",\"model_id\":\"model\",\"model_name\":\"Model\","
+                        "\"authorization_level_id\":\"ask\",\"authorization_level_name\":\"Ask\","
+                        "\"updated_at\":\"2026-11-25T03:20:00Z\",\"settings_version\":1,\"active_run_id\":null}";
+            }
+            return body + "],\"next_cursor\":\"has_more\"}";
+        };
+        io.pages.push_back({200, page(10), ""});
+        const CatalogRequest request{CatalogOperation::Sessions, {}, "has_more", {}, 0};
+        const auto recent = FetchCatalog(io, "metalio_test", request);
+        const auto* list = std::get_if<Sessions>(&recent.data);
+        Check(list && list->items.size() == 10 && list->next_cursor.empty(), "unexpected recent sessions");
+        Check(io.paths == std::vector<std::string>{"/api/v1/sessions?limit=10"}, "wrong sessions query");
+        io.pages.push_back({200, page(11), ""});
+        Check(FetchCatalog(io, "metalio_test", request).error == CatalogError::InvalidResponse,
+              "out-of-contract sessions page accepted");
     });
     test("empty hello sync ready exchange",[]{
         Fixture f;Check(!f.client.Ready(),"initial ready");f.Tick();

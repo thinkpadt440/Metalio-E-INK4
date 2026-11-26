@@ -6,8 +6,12 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#ifdef ESP_PLATFORM
+#include <esp_log.h>
+#endif
 namespace harness {
-SocketIo::SocketIo(NetworkInterface& network):network_(network){}
+SocketIo::SocketIo(NetworkInterface& network, std::function<void(const std::string&)> on_server_date)
+    : network_(network), on_server_date_(std::move(on_server_date)) {}
 SocketIo::~SocketIo(){Close();}
 bool SocketIo::Connect(const Config& config,Callbacks cb) {
     Close();if(!ValidConfig(config))return false;config_=config;
@@ -21,10 +25,25 @@ bool SocketIo::Connect(const Config& config,Callbacks cb) {
     socket_->OnDisconnected(std::move(cb.disconnected));
     socket_->OnError([error=std::move(cb.error)](int){if(error)error();});
     std::string url=config.base_url;url.replace(0,4,"ws");url+="/api/v1/ws";
-    return socket_->Connect(url.c_str());
+    const bool connected = socket_->Connect(url.c_str());
+#ifdef ESP_PLATFORM
+    if (!connected) {
+        const int transport_error = socket_->GetLastError();
+        if (transport_error != 0) {
+            ESP_LOGW("Harness", "WebSocket connect failed: %s (transport error %d)", url.c_str(), transport_error);
+        } else {
+            ESP_LOGW("Harness", "WebSocket connect failed: %s", url.c_str());
+        }
+    }
+#endif
+    return connected;
 }
 bool SocketIo::SendText(const std::string& json) {
     return !json.empty()&&json.size()<=kMaxJsonBytes&&socket_&&socket_->Send(json);
+}
+bool SocketIo::SendBinary(const void* data, size_t size) {
+    return socket_ && data && size > 0 && size <= kMaxAudioChunkBytes && size % 2 == 0 &&
+           socket_->Send(data, size, true);
 }
 void SocketIo::Ping(){if(socket_)socket_->Ping();}
 void SocketIo::Close(){if(socket_){socket_->Close();socket_.reset();}}
@@ -72,6 +91,9 @@ HttpReply SocketIo::Request(const std::string& method,const std::string& path,co
         result.body.append(chunk,static_cast<size_t>(n));
     }
     if(!declared.empty()&&result.body.size()!=expected){result.error="http_truncated";return result;}
+    if (on_server_date_ && result.status >= 200 && result.status < 300) {
+        on_server_date_(http->GetResponseHeader("date"));
+    }
     return result;
 }
 }  // namespace harness

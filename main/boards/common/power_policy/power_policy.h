@@ -32,6 +32,8 @@ enum class PowerNeed : uint8_t {
     UiKeepNet,     // 翻译页保网满频；本页不参与 PA_en
     UsbVirtualDisk, // 虚拟 U 盘启用：不计无操作进待机（不硬占网）
     StandbyInhibit, // 产测老化等：禁止无操作进待机；不硬占网、不驱动 PA（PA 仍靠 DeviceState）
+    HarnessNetwork,       // Keep the Harness socket online while awake.
+    HarnessOnlineStandby, // Opt into an awake standby screen for Harness.
     kCount
 };
 
@@ -73,6 +75,18 @@ public:
 
     /** 触摸芯片是否已深睡（待机 LP）；touch_feed 须跳过 I2C 读以免刷屏报错 */
     bool IsTouchAsleep() const;
+
+    struct HarnessNetworkState {
+        bool allowed;
+        uint32_t sleep_epoch;
+
+        bool AllowsWorkAt(uint32_t epoch) const {
+            return allowed && sleep_epoch == epoch;
+        }
+    };
+    HarnessNetworkState GetHarnessNetworkState() const;
+    bool CanShowOnlineStandby() const;
+    bool IsOnlineStandby() const;
 
     /**
      * @brief 请求立即重算电源档位

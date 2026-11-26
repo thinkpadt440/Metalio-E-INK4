@@ -20,4 +20,11 @@ ctest --test-dir build/harness-client-tests --output-on-failure
 
 最后一项的 NetworkInterface 由测试专用 POSIX TCP/HTTP 实现提供，心跳时间经过加速；不运行固件的真实 HTTP/TLS/4G 驱动。RTOS stub 不模拟真实任务调度。这些检查不能代替真机的网络阻塞时间、栈/堆、电源和按键响应检查。
 
-阶段1的 36 项共享 WebSocket 回归另见 ../ws_transport_tests/README.md。当前测试覆盖连接和同步，没有把尚未实现的录音上传、业务命令确认或审批 UI 算作已完成。
+- harness_approval_*：验证允许、拒绝、分段展示所需的完整详情、网页限定、过期、网页竞争、版本变化、确认丢失、取消、重连、跨会话审批。使用模拟后端计数，确认只有真实允许后才执行一次示例操作。
+- harness_run_*：验证网页任务、同会话并发、旧进度、取消与完成竞争、取消不支持、确认丢失，以及重连快照和重启后补查终态。主机模拟序列化恢复，实际 NVS 写入和设备重启需真机验证。
+- harness_audio_*：使用模拟后端校验 PCM 长度、分块与 SHA-256，覆盖录音接受去重、超时重连、断线重传、忙时手动重试、设置冲突、明确放弃和转写顺序。主机使用已知摘要及 PCM 样本，ESP32 上的 SHA-256 和麦克风仍需真机验证。
+- harness_catalog_localhost：使用 Windows 模拟工具同一份 Python 服务源码，验证 GET Dashboard 各周期、Session 和目录、固定闲聊 PUT、设置 PATCH 的版本冲突、无变化保存及 session.updated。还验证历史游标、长消息 UTF-8 分段、流式增量去重与消息完成。
+
+- harness_standby_localhost：模拟在线待机，在当前连接接收新审批。模拟两次轮询之间完成浅睡和唤醒，验证旧连接失效并通过快照和详情恢复同一笔审批。板上的实际睡眠、网络供电和按键需真机验证。
+
+阶段1的 36 项共享 WebSocket 回归另见 ../ws_transport_tests/README.md。

@@ -11,14 +11,24 @@ public:
     bool fail_start = false;
     bool failed = false;
     unsigned starts = 0;
+    bool frozen = false;
     std::vector<int16_t> pcm = std::vector<int16_t>(16000 * 30);
     LocalRecordingBuffer buffer;
     bool StartLocalRecording() {
-        if (fail_start) return false;
+        if (fail_start || frozen || active) return false;
         buffer.Reset(pcm.data(), pcm.size()); active = true; failed = false; ++starts; return true;
     }
     void StopLocalRecording() { active = false; }
     LocalRecordingInfo GetLocalRecordingInfo() { return {active, failed, static_cast<uint32_t>(buffer.size()), buffer.peak()}; }
+    bool FreezeLocalRecording() {
+        if (active || failed || frozen || buffer.size() < 3200) return false;
+        frozen = true;
+        return true;
+    }
+    void ReleaseLocalRecording() {
+        frozen = false;
+        buffer.Reset(pcm.data(), pcm.size());
+    }
     void Feed(size_t frames) {
         std::vector<int16_t> data(frames * 2, 1000);
         buffer.AppendInterleaved(data.data(), data.size(), 2);

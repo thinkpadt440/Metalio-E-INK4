@@ -654,7 +654,7 @@ bool AudioService::StartLocalRecording() {
     const EventBits_t busy = AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING |
                              AS_EVENT_AUDIO_PROCESSOR_RUNNING;
     if (service_stopped_ || codec_ == nullptr || (xEventGroupGetBits(event_group_) & busy)) return false;
-    if (local_recording_active_) return true;
+    if (local_recording_frozen_ || local_recording_active_) return false;
     if (local_recording_pcm_ == nullptr) {
         local_recording_pcm_ = static_cast<int16_t*>(heap_caps_malloc(
             kLocalRecordingSamples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -684,6 +684,28 @@ LocalRecordingInfo AudioService::GetLocalRecordingInfo() {
     std::lock_guard<std::mutex> lock(local_recording_mutex_);
     return {local_recording_active_, local_recording_failed_,
             static_cast<uint32_t>(local_recording_.size()), local_recording_.peak()};
+}
+
+bool AudioService::FreezeLocalRecording() {
+    std::lock_guard<std::mutex> lock(local_recording_mutex_);
+    if (local_recording_active_ || local_recording_failed_ || local_recording_frozen_ ||
+        local_recording_.size() < 16000 / 5) return false;
+    local_recording_frozen_ = true;
+    return true;
+}
+
+bool AudioService::ReadFrozenRecording(size_t offset, void* out, size_t bytes) {
+    std::lock_guard<std::mutex> lock(local_recording_mutex_);
+    return local_recording_frozen_ && local_recording_.CopyBytes(offset, out, bytes);
+}
+
+void AudioService::ReleaseLocalRecording() {
+    std::lock_guard<std::mutex> lock(local_recording_mutex_);
+    if (local_recording_active_) return;
+    local_recording_.Reset(nullptr, 0);
+    heap_caps_free(local_recording_pcm_);
+    local_recording_pcm_ = nullptr;
+    local_recording_frozen_ = false;
 }
 
 void AudioService::EnableAudioTesting(bool enable) {

@@ -2,10 +2,10 @@
 
 #include <cstdio>
 #include <cstring>
-#include <mutex>
 
 #include <esp_log.h>
 
+#include "harness/service.h"
 #include "product_ui.h"
 #include "settings_screen/settings_screen.h"
 #include "standby_screen/standby_screen.h"
@@ -15,8 +15,8 @@
 namespace {
 constexpr const char* kScreenId = "home";
 constexpr int kRangeCount = 3;
-std::mutex s_metrics_mutex;
-DashboardMetrics s_metrics;
+constexpr const char* kRanges[] = {"all", "30d", "7d"};
+constexpr uint32_t kRefreshIntervalMs = 15000;
 
 struct DashboardUi {
     lv_obj_t* screen = nullptr;
@@ -25,7 +25,15 @@ struct DashboardUi {
     lv_obj_t* data_status = nullptr;
     lv_timer_t* timer = nullptr;
     int selected_range = 0;
+    std::optional<harness::Overview> metrics[kRangeCount];
+    std::shared_ptr<harness::CatalogCall> pending;
+    uint32_t last_request = 0;
+    bool request_due = true;
+    bool request_failed = false;
+    bool was_ready = false;
 };
+
+void RefreshMetrics(DashboardUi* ui);
 
 void SetSelectedRange(DashboardUi* ui, int selected) {
     ui->selected_range = selected;
@@ -45,7 +53,12 @@ void SelectRange(int selected) {
         ? nullptr
         : static_cast<DashboardUi*>(lv_obj_get_user_data(screen));
     if (ui == nullptr || ui->screen != screen) return;
+    if (ui->selected_range == selected && ui->pending) return;
+    ui->pending.reset();
+    ui->request_due = true;
+    ui->request_failed = false;
     SetSelectedRange(ui, selected);
+    RefreshMetrics(ui);
 }
 
 void OnRangeAll(lv_event_t*) { SelectRange(0); }
@@ -81,31 +94,48 @@ void FormatTokens(uint64_t value, char* out, size_t capacity) {
     }
 }
 void RefreshMetrics(DashboardUi* ui) {
-    DashboardMetrics metrics;
-    {
-        std::lock_guard<std::mutex> lock(s_metrics_mutex);
-        metrics = s_metrics;
+    const bool ready = harness::ServiceReady();
+    auto& metrics = ui->metrics[ui->selected_range];
+    if (ui->pending) {
+        if (auto reply = ui->pending->Take()) {
+            if (auto* value = std::get_if<harness::Overview>(&reply->data)) {
+                metrics = std::move(*value);
+            }
+            ui->request_failed = reply->error != harness::CatalogError::None;
+            ui->pending.reset();
+        }
     }
-
-    if (!metrics.valid) {
-        for (lv_obj_t* value : ui->values) product_ui::SetText(value, "--");
-        product_ui::SetText(ui->data_status, "Harness 统计接口待接入");
-        return;
+    if (ready && !ui->pending &&
+        (ui->request_due || !ui->was_ready || lv_tick_elaps(ui->last_request) >= kRefreshIntervalMs)) {
+        ui->pending = harness::SubmitCatalog({harness::CatalogOperation::Overview,
+                                              kRanges[ui->selected_range], {}, {}, 0});
+        ui->last_request = lv_tick_get();
+        ui->request_due = false;
     }
+    ui->was_ready = ready;
 
-    char text[48];
-    FormatCount(metrics.sessions, text, sizeof(text));
-    product_ui::SetText(ui->values[0], text);
-    FormatCount(metrics.messages, text, sizeof(text));
-    product_ui::SetText(ui->values[1], text);
-    FormatTokens(metrics.total_tokens, text, sizeof(text));
-    product_ui::SetText(ui->values[2], text);
-    FormatCount(metrics.active_days, text, sizeof(text));
-    product_ui::SetText(ui->values[3], text);
-    product_ui::SetText(ui->values[4], metrics.peak_hour[0] == '\0' ? "--" : metrics.peak_hour);
-    product_ui::SetText(ui->values[5],
-                        metrics.favorite_model[0] == '\0' ? "--" : metrics.favorite_model);
-    product_ui::SetText(ui->data_status, "统计周期可切换 · 数据由 Harness 提供");
+    if (!metrics) {
+        for (auto* label : ui->values) product_ui::SetText(label, "--");
+    } else {
+        const std::optional<uint64_t> counts[] = {
+            metrics->sessions, metrics->messages, metrics->total_tokens, metrics->active_days};
+        for (size_t i = 0; i < 4; ++i) {
+            char text[32] = "--";
+            if (counts[i]) {
+                if (i == 2) FormatTokens(*counts[i], text, sizeof(text));
+                else FormatCount(*counts[i], text, sizeof(text));
+            }
+            product_ui::SetText(ui->values[i], text);
+        }
+        product_ui::SetText(ui->values[4], metrics->peak_hour.empty() ? "--" : metrics->peak_hour.c_str());
+        std::string model = metrics->favorite_model;
+        if (model.rfind("DeepSeek ", 0) == 0) model[8] = '\n';
+        product_ui::SetText(ui->values[5], model.empty() ? "--" : model.c_str());
+    }
+    const char* status = !ready ? (metrics ? "离线 · 显示上次统计" : "等待 Harness 连接")
+        : ui->pending && !metrics ? "正在读取统计…"
+        : ui->request_failed ? (metrics ? "刷新失败 · 显示上次统计" : "读取失败 · 点击周期重试") : "";
+    product_ui::SetText(ui->data_status, status);
 }
 
 void OnTimer(lv_timer_t* timer) {
@@ -142,7 +172,7 @@ lv_obj_t* CreateMetricCard(lv_obj_t* parent, int x, int y, int width, int height
                                    product_ui::HeadingFont());
     lv_obj_set_height(*value_out, 42);
     lv_label_set_long_mode(*value_out, LV_LABEL_LONG_DOT);
-    product_ui::Label(card, 12, height - 34, width - 24, note);
+    if (*note) product_ui::Label(card, 12, height - 34, width - 24, note);
     return card;
 }
 
@@ -153,11 +183,6 @@ lv_obj_t* CreateRangeButton(lv_obj_t* parent, int x, const char* text,
     return button;
 }
 }  // namespace
-
-void DashboardScreen::UpdateMetrics(const DashboardMetrics& metrics) {
-    std::lock_guard<std::mutex> lock(s_metrics_mutex);
-    s_metrics = metrics;
-}
 
 lv_obj_t* DashboardScreen::Create() {
     ESP_LOGI("Dashboard", "create vertical usage overview");
@@ -184,7 +209,7 @@ lv_obj_t* DashboardScreen::Create() {
     CreateMetricCard(body, 0, first_y, card_width, card_height,
                      "会话数", "当前周期", &ui->values[0]);
     CreateMetricCard(body, card_width + gap, first_y, card_width, card_height,
-                     "消息数", "用户消息数", &ui->values[1]);
+                     "消息数", "用户与助手", &ui->values[1]);
     CreateMetricCard(body, 0, first_y + card_height + gap, card_width, card_height,
                      "总 Token", "输入和输出", &ui->values[2]);
     CreateMetricCard(body, card_width + gap, first_y + card_height + gap,
@@ -194,11 +219,13 @@ lv_obj_t* DashboardScreen::Create() {
                      "高峰时段", "请求最高时段", &ui->values[4]);
     CreateMetricCard(body, card_width + gap, first_y + 2 * (card_height + gap),
                      card_width, card_height, "常用模型",
-                     "当前周期", &ui->values[5]);
+                     "", &ui->values[5]);
     lv_obj_set_style_text_font(ui->values[5], fontpack_lv_font_ui(), 0);
+    lv_obj_set_style_text_line_space(ui->values[5], 4, 0);
+    lv_obj_set_height(ui->values[5], card_height - 50);
 
     ui->data_status = product_ui::Label(body, 0, first_y + 3 * card_height + 2 * gap + 8,
-                                        width, "Harness 统计接口待接入");
+                                        width, "");
     const int button_y = height - 72;
     const int button_width = (width - 12) / 2;
     product_ui::Button(body, 0, button_y, button_width, 58, "进入助手",
@@ -207,7 +234,7 @@ lv_obj_t* DashboardScreen::Create() {
                        OnSettings);
 
     RefreshMetrics(ui);
-    ui->timer = lv_timer_create(OnTimer, 1000, ui);
+    ui->timer = lv_timer_create(OnTimer, 250, ui);
     lv_obj_add_event_cb(ui->screen, OnDelete, LV_EVENT_DELETE, ui);
     ScreenSetIsHome(true);
     VkKey_AttachScreen(ui->screen, kScreenId,

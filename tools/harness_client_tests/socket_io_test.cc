@@ -10,6 +10,7 @@ static void Check(bool ok,const char* text){if(!ok)throw std::runtime_error(text
 struct Data {
     std::string body="{\"items\":[],\"next_cursor\":null}",type="application/json",length="35",url,method,content;
     std::map<std::string,std::string> headers;
+    std::string date = "Wed, 25 Nov 2026 09:14:03 GMT";
     unsigned closes=0,reads=0;int status=200,timeout=0,id=0;
     bool open=true,read_error=false,keep_alive=true;
 };
@@ -29,7 +30,11 @@ public:
     }
     int Write(const char*,size_t)override{return -1;}
     int GetStatusCode()override{return d.status;}
-    std::string GetResponseHeader(const std::string& key)const override{return key=="content-type"?d.type:key=="content-length"?d.length:"";}
+    std::string GetResponseHeader(const std::string& key) const override {
+        if (key == "content-type") return d.type;
+        if (key == "content-length") return d.length;
+        return key == "date" ? d.date : "";
+    }
     size_t GetBodyLength()override{return d.body.size();}
     std::string ReadAll()override{throw std::runtime_error("unbounded ReadAll must not be used");}
     int GetLastError()override{return 0;}
@@ -66,6 +71,19 @@ int main(){
         Check(f.n.data.headers["X-Device-ID"]=="metalio_test"&&f.n.data.headers.count("Authorization")==0,"HTTP headers");
         Check(f.n.data.closes==1&&f.n.data.id==4&&f.n.websocket_id==2,"resource cleanup/socket ids");
         Check(!f.n.data.keep_alive&&f.n.data.timeout>0&&f.n.data.timeout<=10000,"HTTP timeout/keepalive");
+    });
+    test("server date comes from a successful bounded response", [] {
+        Network network;
+        network.data.length = std::to_string(network.data.body.size());
+        unsigned calls = 0;
+        SocketIo io(network, [&](const std::string& date) {
+            ++calls;
+            Check(date == network.data.date, "date header lost");
+        });
+        Check(io.Connect({"http://127.0.0.1:18080", "metalio_test", "test", "test_boot"}, {}), "connect");
+        Check(io.Request("GET", "/api/v1/sync").error.empty() && calls == 1, "date not published");
+        network.data.status = 503;
+        Check(io.Request("GET", "/api/v1/sync").status == 503 && calls == 1, "error response published date");
     });
     test("PATCH encodes body and PUT carries no body",[]{
         Fixture f;auto reply=f.io.Request("PATCH","/api/v1/sessions/s/settings","{\"model_id\":\"x\"}");

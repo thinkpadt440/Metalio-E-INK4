@@ -87,6 +87,7 @@ int64_t standby_elapsed_us = 0;
 int64_t standby_awake_mark_us = 0;
 bool standby_ui_requested = false;
 bool shutdown_requested = false;
+uint32_t harness_sleep_epoch = 0;
 esp_timer_handle_t tick = nullptr;
 TaskHandle_t lp_task = nullptr;
 bool lp_session_active = false;
@@ -151,7 +152,8 @@ bool NeedsHardNetActiveLocked()
 
 bool NeedsSoftKeepNetLocked()
 {
-    return NeedHeld(PowerNeed::AudioSession) || NeedHeld(PowerNeed::UiKeepNet);
+    return NeedHeld(PowerNeed::AudioSession) || NeedHeld(PowerNeed::UiKeepNet) ||
+           NeedHeld(PowerNeed::HarnessNetwork);
 }
 
 bool AllowsUserIdleStandbyLocked()
@@ -287,6 +289,18 @@ void EnterStandbyUiShowCb(void* /*arg*/)
     StandbyScreen::Show();
 }
 
+bool CanShowOnlineStandbyLocked()
+{
+    return NeedHeld(PowerNeed::HarnessOnlineStandby) && !pwr::shutdown_requested &&
+           !pwr::lp_session_active && pwr::mode != pwr::Mode::StandbyUi &&
+           !IsProvisioningStateLocked() && !BatteryUvLockout_IsActive();
+}
+
+bool IsStandbyMode(pwr::Mode mode)
+{
+    return mode == pwr::Mode::StandbyUi || mode == pwr::Mode::OnlineStandby;
+}
+
 pwr::Mode EvaluateLocked()
 {
     if (AnyFullNeed()) {
@@ -295,20 +309,22 @@ pwr::Mode EvaluateLocked()
     if (IsProvisioningStateLocked()) {
         return EvaluateProvisioningLocked();
     }
+    const auto standby_mode = CanShowOnlineStandbyLocked()
+        ? pwr::Mode::OnlineStandby : pwr::Mode::StandbyUi;
     if (StandbyScreen::IsActive()) {
-        return pwr::Mode::StandbyUi;
+        return StandbyScreen::IsOnline() ? standby_mode : pwr::Mode::StandbyUi;
     }
     if (NeedsHardNetActiveLocked()) {
         pwr::ClearNetGraceLocked();
         return pwr::Mode::NetActive;
     }
     if (ShouldStayInStandbyUiLocked()) {
-        return pwr::Mode::StandbyUi;
+        return standby_mode;
     }
     if (AllowsUserIdleStandbyLocked() && UserInactiveLongEnoughLocked()) {
         // 并行计时：暂留已在 AppIdle 前消费，满进待机阈值直接待机，勿二次拉网
         pwr::ClearNetGraceLocked();
-        return pwr::Mode::StandbyUi;
+        return standby_mode;
     }
     if (NeedsSoftKeepNetLocked()) {
         pwr::ClearNetGraceLocked();
@@ -437,7 +453,7 @@ void TickCb(void* /*arg*/)
     }
     xSemaphoreTake(pwr::mu, portMAX_DELAY);
     pwr::ReevaluateLocked();
-    if (pwr::mode == pwr::Mode::StandbyUi && pwr::StandbyUiLongEnoughLocked()) {
+    if (IsStandbyMode(pwr::mode) && pwr::StandbyUiLongEnoughLocked()) {
         pwr::RequestShutdownLocked();
     }
     xSemaphoreGive(pwr::mu);
@@ -474,6 +490,8 @@ const char* ModeName(Mode m)
             return "AppIdle";
         case Mode::StandbyUi:
             return "StandbyUi";
+        case Mode::OnlineStandby:
+            return "OnlineStandby";
         default:
             return "?";
     }
@@ -553,6 +571,7 @@ void BeginPowerOffLocked()
     // 关机第一件事：触摸深睡（再刷关机图/脉冲）；待机 LP 已睡则 no-op
     EnsureTouchSleepLocked();
     shutdown_requested = true;
+    ++harness_sleep_epoch;
     // 关机任务会自行 hold MAIN_PWR；取消未执行的掉电 pending，避免与 pwr_off 竞态
     main_rail_off_pending = false;
     main_rail_on_pending = false;
@@ -615,9 +634,10 @@ void ApplyLocked(Mode next)
     }
 
     mode = next;
+    if (next == Mode::StandbyUi) ++harness_sleep_epoch;
     ESP_LOGD(TAG, "mode %s -> %s", ModeName(prev), ModeName(next));
 
-    if (prev == Mode::StandbyUi && next != Mode::StandbyUi) {
+    if (IsStandbyMode(prev) && !IsStandbyMode(next)) {
         standby_wake_exit = false;
     }
 
@@ -625,10 +645,10 @@ void ApplyLocked(Mode next)
         restore_provisioning_ui_pending = true;
     }
 
-    if (next == Mode::StandbyUi) {
-        ResetStandbyElapsedLocked();
+    if (IsStandbyMode(next)) {
+        if (!IsStandbyMode(prev)) ResetStandbyElapsedLocked();
         RequestStandbyUiAsync();
-        ArmStandbyLpTaskLocked();
+        if (next == Mode::StandbyUi) ArmStandbyLpTaskLocked();
     } else {
         ClearStandbyElapsedLocked();
         standby_ui_requested = false;
@@ -877,6 +897,36 @@ bool PowerPolicy::IsTouchAsleep() const
     const bool asleep = pwr::touch_asleep;
     xSemaphoreGive(pwr::mu);
     return asleep;
+}
+
+PowerPolicy::HarnessNetworkState PowerPolicy::GetHarnessNetworkState() const
+{
+    if (pwr::mu == nullptr) return {false, 0};
+    xSemaphoreTake(pwr::mu, portMAX_DELAY);
+    const bool allowed = !pwr::shutdown_requested && !IsProvisioningStateLocked() &&
+        pwr::mode != pwr::Mode::StandbyUi && !pwr::lp_session_active && !BatteryUvLockout_IsActive() &&
+        (!StandbyScreen::IsActive() || StandbyScreen::IsOnline());
+    const HarnessNetworkState state{allowed, pwr::harness_sleep_epoch};
+    xSemaphoreGive(pwr::mu);
+    return state;
+}
+
+bool PowerPolicy::CanShowOnlineStandby() const
+{
+    if (pwr::mu == nullptr) return false;
+    xSemaphoreTake(pwr::mu, portMAX_DELAY);
+    const bool online = CanShowOnlineStandbyLocked();
+    xSemaphoreGive(pwr::mu);
+    return online;
+}
+
+bool PowerPolicy::IsOnlineStandby() const
+{
+    if (pwr::mu == nullptr) return false;
+    xSemaphoreTake(pwr::mu, portMAX_DELAY);
+    const bool online = StandbyScreen::IsOnline() && CanShowOnlineStandbyLocked();
+    xSemaphoreGive(pwr::mu);
+    return online;
 }
 
 void PowerPolicy::PreparePowerKeyStandby()

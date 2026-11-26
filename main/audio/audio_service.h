@@ -112,6 +112,9 @@ public:
     bool StartLocalRecording();
     void StopLocalRecording();
     LocalRecordingInfo GetLocalRecordingInfo();
+    bool FreezeLocalRecording();
+    bool ReadFrozenRecording(size_t offset, void* out, size_t bytes);
+    void ReleaseLocalRecording();
 
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
@@ -134,6 +137,7 @@ private:
     int16_t* local_recording_pcm_ = nullptr;
     bool local_recording_active_ = false;
     bool local_recording_failed_ = false;
+    bool local_recording_frozen_ = false;
 
     // opus_codec: large stack in PSRAM (wake_word encode pattern); TCB in INTERNAL.
     static constexpr size_t kOpusCodecStackWords = 2048 * 13;

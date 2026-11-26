@@ -1,4 +1,7 @@
 #pragma once
+#include "upload.h"
+#include "approval_tracker.h"
+#include "run_tracker.h"
 #include <atomic>
 #include <cstdint>
 #include <deque>
@@ -31,6 +34,7 @@ public:
     virtual ~ClientIo()=default;
     virtual bool Connect(const Config& config, Callbacks callbacks)=0;
     virtual bool SendText(const std::string& json)=0;
+    virtual bool SendBinary(const void*, size_t) { return false; }
     virtual void Ping()=0;
     virtual void Close()=0;
     virtual HttpReply Request(const std::string& method,const std::string& path,
@@ -57,6 +61,14 @@ public:
     ~Client();
     void Tick(bool network_ready);
     void Stop();
+    void AdvanceUpload(std::shared_ptr<UploadTicket> ticket);
+    bool SendCancel(const RunInfo& run);
+    bool SendApproval(const ApprovalRequest& request);
+    std::optional<ApprovalResult> TakeApprovalResult();
+    bool ApprovalPending() const { return !approval_command_.empty(); }
+    std::optional<CancelResult> TakeCancelResult();
+    bool CancelPending() const { return !cancel_command_.empty(); }
+    bool UploadSending() const { return upload_.Sending(); }
     ConnectionSnapshot Status() const;
     std::vector<Resource> Resources() const;
     std::vector<std::string> DrainEvents();
@@ -64,6 +76,16 @@ public:
 private:
     struct Input { enum Kind { Text,Pong,Closed,Error } kind; std::string text; uint64_t received_at=0; };
     ClientIo& io_;
+    UploadTransfer upload_;
+    std::string cancel_command_;
+    CancelResult cancellation_;
+    std::optional<CancelResult> cancel_result_;
+    uint64_t cancel_deadline_ = 0;
+    std::string approval_command_;
+    ApprovalPtr deciding_;
+    ApprovalDecision deciding_decision_ = ApprovalDecision::Reject;
+    std::optional<ApprovalResult> approval_result_;
+    uint64_t approval_deadline_ = 0;
     Config config_;
     Clock clock_;
     std::function<void(const ConnectionSnapshot&)> observer_;
@@ -87,6 +109,10 @@ private:
     uint64_t deadline_=0,sync_deadline_=0,retry_at_=0,last_pong_=0,last_ping_=0,last_seq_=0;
     uint32_t heartbeat_interval_=20000,heartbeat_timeout_=60000,failures_=0,command_counter_=0;
     bool sync_ack_=false,reading_snapshot_=false;
+    void FinishCancel(std::string error);
+    bool HandleCancelAck(const cJSON* root);
+    bool HandleApprovalAck(const cJSON* root, const std::string& text);
+    void FinishApproval(ApprovalPtr actual, std::string error);
     void Enqueue(uint32_t generation,Input input);
     void Publish();
     void Retry(const std::string& reason);
@@ -94,9 +120,12 @@ private:
     void ReadSnapshotPage();
     bool ApplyResource(const std::string& kind,const cJSON* data);
     bool ApplyEvent(const std::string& type,const cJSON* root);
-    bool SendControl(const char* type,const std::string& command,const std::string& data);
+    bool SendControl(const char* type,const std::string& command,const std::string& data, const RunInfo* run = nullptr);
     std::string NewCommand();
 };
+inline constexpr size_t kMaxServerOriginLength = 256;
+std::string NormalizeServerOrigin(std::string origin);
+bool ValidServerOrigin(const std::string& origin);
 bool ValidConfig(const Config& config);
 std::string UrlEncode(const std::string& value);
 }  // namespace harness

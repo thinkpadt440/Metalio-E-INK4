@@ -12,7 +12,10 @@
 #include "bq27220_gauge.h"
 #include "display_orient.h"
 #include "lv_adapter_display.h"
+#include "harness/service.h"
 #include "power_policy.h"
+#include "product_ui.h"
+#include "screen_common.h"
 #include "task_screen/task_screen.h"
 #include "settings_screen/settings_screen.h"
 #include "settings_screen/settings_test/settings_test_battery_screen.h"
@@ -21,13 +24,19 @@
 #include <esp_log.h>
 #include <lvgl.h>
 
+#include <atomic>
+#include <cstdio>
+
 
 static constexpr const char* TAG = "StandbyScreen";
 static constexpr const char* kScreenId = "standby";
 
 enum class StandbyVariant : uint8_t { None = 0, Classic = 1, Wallpaper = 2 };
 
-static bool s_host_alive = false;
+static std::atomic<bool> s_host_alive{false};
+static std::atomic<bool> s_online{false};
+static lv_obj_t* s_online_button = nullptr;
+static lv_timer_t* s_online_timer = nullptr;
 static bool s_as_overlay = false;
 static lv_obj_t* s_overlay_root = nullptr;
 static lv_obj_t* s_underlying_scr = nullptr;
@@ -52,6 +61,12 @@ static bool PreferWallpaperVariant() {
 }
 
 static void TeardownVariant() {
+    if (s_online_timer) {
+        lv_timer_delete(s_online_timer);
+        s_online_timer = nullptr;
+    }
+    s_online_button = nullptr;
+    s_online = false;
     if (s_variant == StandbyVariant::Classic) {
         StandbyClassic_Teardown();
     } else if (s_variant == StandbyVariant::Wallpaper) {
@@ -105,6 +120,37 @@ static void DismissThenAssistantAsync(void* /*arg*/) {
     HarnessScreen::RequestOpen();
 }
 
+static void UpdateOnlineNotice(lv_timer_t*) {
+    if (!PowerPolicy::GetInstance().IsOnlineStandby()) {
+        lv_obj_add_flag(s_online_button, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_clear_flag(s_online_button, LV_OBJ_FLAG_HIDDEN);
+    const bool ready = harness::ServiceReady();
+    const size_t pending = ready ? harness::PendingApprovals().size() : 0;
+    char label[48];
+    if (pending) {
+        std::snprintf(label, sizeof(label), "待审批 %zu", pending);
+    } else {
+        std::snprintf(label, sizeof(label), "%s", ready ? "在线待机" : "正在连接");
+    }
+    auto* button_label = lv_obj_get_child(s_online_button, 0);
+    product_ui::SetText(button_label, label);
+}
+
+static void OnOnlineNotice(lv_event_t*) {
+    if (PowerPolicy::GetInstance().IsOnlineStandby()) {
+        lv_async_call(DismissThenAssistantAsync, nullptr);
+    }
+}
+
+static void MountOnlineNotice(lv_obj_t* overlay) {
+    s_online_button = product_ui::Button(overlay, 0, 0, 160, 46, "正在连接", OnOnlineNotice);
+    lv_obj_align(s_online_button, LV_ALIGN_BOTTOM_MID, 0, -20);
+    s_online_timer = lv_timer_create(UpdateOnlineNotice, 1000, nullptr);
+    UpdateOnlineNotice(nullptr);
+}
+
 static bool OnBootClick() {
     ESP_LOGD(TAG, "boot short -> ignore (stay standby)");
     return true;
@@ -124,6 +170,7 @@ lv_obj_t* StandbyScreen::Create() {
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_CLICKABLE);
     ClearStatusBindings();
     s_as_overlay = false;
+    s_online = false;
     s_host_alive = true;
     MountVariant(scr, false);
     lv_obj_add_event_cb(scr, OnScreenUnloaded, LV_EVENT_SCREEN_UNLOADED, nullptr);
@@ -156,21 +203,27 @@ void StandbyScreen::Show() {
     s_underlying_scr = under;
     s_overlay_root = overlay;
     s_as_overlay = true;
+    const bool online = PowerPolicy::GetInstance().CanShowOnlineStandby();
+    s_online = online;
     s_host_alive = true;
 
     MountVariant(overlay, true);
     lv_obj_move_foreground(overlay);
     lv_obj_add_event_cb(overlay, OnOverlayDeleted, LV_EVENT_DELETE, nullptr);
 
-    if (auto* disp = LVAdapterDisplay::Instance()) {
+    if (online) {
+        MountOnlineNotice(overlay);
+    } else if (auto* disp = LVAdapterDisplay::Instance()) {
         disp->BeginStandbyEnterPaint();
     }
 
     BookScreen::OnEnterStandby();
     SettingsScreen_OnEnterStandby();
     SettingsTestBatteryScreen_PauseForStandby();
-    if (auto* disp = LVAdapterDisplay::Instance()) {
-        disp->PauseStandbyBackgroundWork();
+    if (!online) {
+        if (auto* disp = LVAdapterDisplay::Instance()) {
+            disp->PauseStandbyBackgroundWork();
+        }
     }
     PowerPolicy::GetInstance().RequestReevaluate();
 }
@@ -231,6 +284,10 @@ bool StandbyScreen::IsActive() {
     return s_host_alive;
 }
 
+bool StandbyScreen::IsOnline() {
+    return s_host_alive && s_online;
+}
+
 bool StandbyScreen::IsPaintReady() {
     if (!s_host_alive) {
         return false;
@@ -271,6 +328,9 @@ bool StandbyScreen::HandleBootLongPress() {
         return false;
     }
     ESP_LOGI(TAG, "boot long -> dismiss + harness");
+    if (IsOnline()) {
+        return ScreenLvAsync(DismissThenAssistantAsync);
+    }
     lv_async_call(DismissThenAssistantAsync, nullptr);
     return true;
 }

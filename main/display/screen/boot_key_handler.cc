@@ -186,8 +186,11 @@ void PowerKey_OnClick() {
         return;
     }
     if (StandbyScreen::IsActive()) {
-        // 待机 Overlay 期间 iot_button 已挂起，不应到达此处
-        ESP_LOGW(TAG, "power short in standby (unexpected iot path)");
+        if (PowerPolicy::GetInstance().IsOnlineStandby()) {
+            ScreenLvAsync([](void*) {
+                if (PowerPolicy::GetInstance().IsOnlineStandby()) StandbyScreen::Dismiss();
+            });
+        }
         return;
     }
     ESP_LOGI(TAG, "power short -> standby");
@@ -209,7 +212,7 @@ void PowerKey_OnLongPress() {
         return;
     }
     // 老化测试保留长按关机，便于产测救砖
-    if (StandbyScreen::IsActive()) {
+    if (StandbyScreen::IsActive() && !PowerPolicy::GetInstance().IsOnlineStandby()) {
         ESP_LOGW(TAG, "power long in standby (unexpected iot path)");
         return;
     }

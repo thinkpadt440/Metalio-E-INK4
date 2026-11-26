@@ -8,6 +8,18 @@ add_library(preview_lvgl STATIC ${LVFILES})
 target_compile_definitions(preview_lvgl PUBLIC LV_CONF_INCLUDE_SIMPLE LV_LVGL_H_INCLUDE_SIMPLE LV_KCONFIG_IGNORE)
 target_include_directories(preview_lvgl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${LVROOT} PRIVATE ${ROOT}/main/display)
 add_executable(preview preview.cc ${ROOT}/main/display/screen/dashboard_screen/dashboard_screen.cc ${ROOT}/main/display/screen/harness_screen/harness_screen.cc ${ROOT}/main/display/screen/harness_screen/harness_voice.cc ${ROOT}/main/display/font/fontpack_lvgl.cc ${ROOT}/main/display/font/font_loader.c ${ROOT}/main/display/font/font_misans_regular_160_2.c)
+set(CJSON_ROOT "${CJSON_ROOT}" CACHE PATH "ESP-IDF cJSON source")
+if(NOT EXISTS "${CJSON_ROOT}/cJSON.c")
+    set(CJSON_ROOT "$ENV{IDF_PATH}/components/json/cJSON")
+endif()
+if(NOT EXISTS "${CJSON_ROOT}/cJSON.c")
+    message(FATAL_ERROR "Supply CJSON_ROOT or source ESP-IDF export.sh")
+endif()
+target_sources(preview PRIVATE ${ROOT}/main/device_time.cc
+    ${ROOT}/main/display/screen/harness_screen/chat_reader.cc
+    ${ROOT}/main/display/screen/harness_screen/approval_panel.cc
+    ${ROOT}/main/harness/history.cc ${ROOT}/main/harness/json.cc ${CJSON_ROOT}/cJSON.c)
+target_include_directories(preview PRIVATE ${CJSON_ROOT})
 target_include_directories(preview BEFORE PRIVATE stubs)
 target_include_directories(preview PRIVATE ${ROOT}/main ${ROOT}/main/display ${ROOT}/main/display/font ${ROOT}/main/display/screen ${ROOT}/main/audio)
 target_compile_definitions(preview PRIVATE PREVIEW_ROOT="${ROOT}")

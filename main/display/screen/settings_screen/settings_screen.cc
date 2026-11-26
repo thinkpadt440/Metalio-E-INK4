@@ -11,6 +11,7 @@
 #include "settings_common.h"
 #include "settings_conversation_tab.h"
 #include "settings_haptic_tab.h"
+#include "settings_harness_tab.h"
 #include "settings_language_tab.h"
 #include "settings_log_tab.h"
 #include "settings_log_upload.h"
@@ -42,6 +43,7 @@ enum class SettingsTab : int {
     kTest = 8,
     kLog = 9,
     kAbout = 10,  // 关于始终放最后
+    kHarness = 11,
 };
 
 struct SettingsTabEntry {
@@ -54,7 +56,9 @@ static const char* TabNameTheme() { return Lang::Strings::SETTINGS_TAB_THEME; }
 static const char* TabNameLanguage() { return Lang::Strings::SETTINGS_TAB_LANGUAGE; }
 static const char* TabNameHaptic() { return Lang::Strings::SETTINGS_TAB_HAPTIC; }
 static const char* TabNamePower() { return Lang::Strings::SETTINGS_TAB_POWER; }
-static const char* TabNameConversation() { return Lang::Strings::SETTINGS_TAB_CONVERSATION; }
+static const char* TabNameHarness() {
+    return std::strcmp(Lang::CODE, "zh-CN") == 0 ? "助手" : "Assistant";
+}
 static const char* TabNameStorage() { return Lang::Strings::SETTINGS_TAB_STORAGE; }
 static const char* TabNameBluetooth() { return Lang::Strings::SETTINGS_TAB_BLUETOOTH; }
 static const char* TabNameTest() { return Lang::Strings::SETTINGS_TAB_TEST; }
@@ -68,7 +72,7 @@ static constexpr SettingsTabEntry kTabs[] = {
     {SettingsTab::kLanguage, TabNameLanguage},
     {SettingsTab::kHaptic, TabNameHaptic},
     {SettingsTab::kPower, TabNamePower},
-    {SettingsTab::kConversation, TabNameConversation},
+    {SettingsTab::kHarness, TabNameHarness},
     {SettingsTab::kStorage, TabNameStorage},
     {SettingsTab::kBluetooth, TabNameBluetooth},
     {SettingsTab::kTest, TabNameTest},
@@ -128,6 +132,9 @@ static void ResetTab(SettingsTab id) {
         case SettingsTab::kConversation:
             SettingsConversationTab_Reset();
             break;
+        case SettingsTab::kHarness:
+            SettingsHarnessTab_Reset();
+            break;
         case SettingsTab::kStorage:
             SettingsStorageTab_Reset();
             break;
@@ -170,6 +177,9 @@ static void BuildTab(SettingsTab id) {
         case SettingsTab::kConversation:
             SettingsConversationTab_Build(page);
             break;
+        case SettingsTab::kHarness:
+            SettingsHarnessTab_Build(page);
+            break;
         case SettingsTab::kStorage:
             SettingsStorageTab_Build(page);
             break;
@@ -195,6 +205,9 @@ static void DeactivateActiveTabLiveWork() {
         return;
     }
     const SettingsTab id = kTabs[s_ui.active_tab].id;
+    if (id == SettingsTab::kHarness) {
+        SettingsHarnessTab_HideKeyboard();
+    }
     if (id == SettingsTab::kBluetooth) {
         SettingsBluetoothTab_OnDeactivated();
     }

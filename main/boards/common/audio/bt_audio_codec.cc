@@ -1,5 +1,6 @@
 #include "bt_audio_codec.h"
 
+#include <esp_err.h>
 #include <esp_log.h>
 #include <cmath>
 #include <cstring>
@@ -104,12 +105,17 @@ int BTAudioCodec::Write(const int16_t *data, int samples)
 
 int BTAudioCodec::Read(int16_t *dest, int samples)
 {
-    size_t bytes_read;
-
+    size_t bytes_read = 0;
     std::vector<int32_t> bit32_buffer(samples);
-    if (i2s_channel_read(rx_handle_, bit32_buffer.data(), samples * sizeof(int32_t), &bytes_read, pdMS_TO_TICKS(100)) != ESP_OK)
+    const size_t bytes_requested = bit32_buffer.size() * sizeof(int32_t);
+    // ESP-IDF converts this millisecond timeout to ticks internally.
+    constexpr uint32_t kReadTimeoutMs = 100;
+    const esp_err_t result = i2s_channel_read(rx_handle_, bit32_buffer.data(), bytes_requested,
+                                              &bytes_read, kReadTimeoutMs);
+    if (result != ESP_OK)
     {
-        ESP_LOGE(TAG, "Read Failed!");
+        ESP_LOGE(TAG, "I2S read failed: %s (%u/%u bytes)", esp_err_to_name(result),
+                 static_cast<unsigned>(bytes_read), static_cast<unsigned>(bytes_requested));
         return 0;
     }
 

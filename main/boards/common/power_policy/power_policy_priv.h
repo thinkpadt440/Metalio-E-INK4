@@ -23,6 +23,7 @@ enum class Mode : uint8_t {
     KeepNet,    // 保留档位（评估暂不选用）
     AppIdle,    // 关 PA + 关 WiFi + 空闲降频
     StandbyUi,  // 浅睡待机
+    OnlineStandby, // Standby screen with CPU and Wi-Fi awake.
 };
 
 inline constexpr int kIdleToStandbySecDefault = 3 * 60;         // 无操作 → 待机默认秒数

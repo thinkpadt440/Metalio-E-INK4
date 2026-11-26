@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 // Storage is supplied by the owner (PSRAM on device). External synchronization is required.
 class LocalRecordingBuffer {
@@ -20,6 +21,13 @@ public:
             const int value = data[i];
             peak_ = std::max(peak_, value < 0 ? -value : value);
         }
+    }
+    bool CopyBytes(size_t offset, void* out, size_t bytes) const {
+        const size_t stored = count_ * sizeof(int16_t);
+        if (!data_ || !out || bytes == 0 || (offset | bytes) % sizeof(int16_t) != 0 ||
+            offset > stored || bytes > stored - offset) return false;
+        std::memcpy(out, reinterpret_cast<const uint8_t*>(data_) + offset, bytes);
+        return true;
     }
     size_t size() const { return count_; }
     bool full() const { return count_ == capacity_; }

@@ -213,17 +213,21 @@ esp_err_t Ota::CheckResponse(bool chat_only) {
         cJSON *server_time = cJSON_GetObjectItem(root, "server_time");
         if (cJSON_IsObject(server_time)) {
             cJSON *timestamp = cJSON_GetObjectItem(server_time, "timestamp");
+#ifndef CONFIG_BOARD_TYPE_METALIO_E_INK_4
             cJSON *timezone_offset = cJSON_GetObjectItem(server_time, "timezone_offset");
+#endif
         
             if (cJSON_IsNumber(timestamp)) {
                 // 设置系统时间
                 struct timeval tv;
                 double ts = timestamp->valuedouble;
             
-                // 如果有时区偏移，计算本地时间
+#ifndef CONFIG_BOARD_TYPE_METALIO_E_INK_4
+                // Legacy displays without a configured time zone read wall-clock time directly.
                 if (cJSON_IsNumber(timezone_offset)) {
-                    ts += (timezone_offset->valueint * 60 * 1000); // 转换分钟为毫秒
+                    ts += (timezone_offset->valueint * 60 * 1000);
                 }
+#endif
             
                 tv.tv_sec = (time_t)(ts / 1000);  // 转换毫秒为秒
                 tv.tv_usec = (suseconds_t)((long long)ts % 1000) * 1000;  // 剩余的毫秒转换为微秒

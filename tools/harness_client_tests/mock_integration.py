@@ -110,7 +110,42 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 else:raise ValueError('unexpected command '+kind)
         except (EOFError,ConnectionResetError,BrokenPipeError,socket.timeout):pass
         finally:self.close_connection=True
+def run_mock_backend(executable, mode, scenario=None):
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "mock_backend"))
+    import mock_backend
+    mock_backend.DROP_AUDIO_ONCE = "busy" if scenario == "busy_retry" else scenario or ""
+    if mode == "--approval":
+        mock_backend.APPROVAL_EXPIRY_SECONDS = 0.9
+    if mode == "--run":
+        mock_backend.WEB_STEP_SECONDS = 0.45
+    with mock_backend.Server(("127.0.0.1", 0), mock_backend.Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            origin = "http://127.0.0.1:" + str(server.server_port)
+            command = [executable, origin, mode]
+            if scenario:
+                command.append(scenario)
+            result = subprocess.run(command, timeout=18)
+            if mode == "--audio" and result.returncode == 0:
+                expected = 0 if scenario in ("busy", "conflict", "bad_digest", "short", "odd") else 1
+                assert len(mock_backend.ACCEPTED_AUDIO) == len(mock_backend.RUNS) == expected
+            if mode == "--approval" and result.returncode == 0:
+                allowed = scenario in ("approve", "long", "lost_ack", "version", "multi")
+                with mock_backend.LOCK:
+                    assert len(mock_backend.APPROVAL_EXECUTIONS) == int(allowed)
+                    assert len(mock_backend.APPROVALS) == (2 if scenario == "multi" else 1)
+            return result.returncode
+        finally:
+            server.shutdown()
+            thread.join()
+
 def main():
+    if sys.argv[2:] in (["--catalog"], ["--standby"]):
+        return run_mock_backend(sys.argv[1], sys.argv[2])
+    if len(sys.argv) == 4 and sys.argv[2] in ("--audio", "--run", "--approval"):
+        return run_mock_backend(sys.argv[1], sys.argv[2], sys.argv[3])
     server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler);server.daemon_threads=True
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     try:

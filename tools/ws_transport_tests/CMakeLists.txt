@@ -11,7 +11,7 @@ if(NOT EXISTS "${CJSON_ROOT}/cJSON.c")
  message(FATAL_ERROR "Set CJSON_ROOT to the ESP-IDF components/json/cJSON directory")
 endif()
 add_executable(ws_transport_tests websocket_test.cc ${ROOT}/components/esp-ml307/src/web_socket.cc
- ${ROOT}/main/harness/transport.cc ${CJSON_ROOT}/cJSON.c)
+ ${ROOT}/main/harness/json.cc ${ROOT}/main/harness/transport.cc ${CJSON_ROOT}/cJSON.c)
 target_include_directories(ws_transport_tests PRIVATE ${ROOT}/main ${CJSON_ROOT})
 target_include_directories(ws_transport_tests PRIVATE stubs ${ROOT}/components/esp-ml307/include)
 target_compile_options(ws_transport_tests PRIVATE -UNDEBUG -Wall -Wextra)

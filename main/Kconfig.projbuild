@@ -8,6 +8,13 @@ menu "Harness Companion"
     config HARNESS_DEVICE_ID
         string "Device identifier (empty derives from MAC)"
         default ""
+    config HARNESS_ONLINE_STANDBY
+        bool "Keep Harness online on the standby screen"
+        default n
+        help
+            For demonstrations with a configured Harness server. Keep Wi-Fi and
+            the CPU awake on the standby screen so tasks and approvals arrive.
+            When disabled, use existing light sleep and resync on wake.
 endmenu
 
 menu "Xiaozhi Assistant"

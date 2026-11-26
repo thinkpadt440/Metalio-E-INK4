@@ -16,6 +16,7 @@ public:
 
     /** @brief Overlay 是否处于显示状态 */
     static bool IsActive();
+    static bool IsOnline();
 
     /** @brief 待机内容是否已就绪，可开始渲染和刷屏 */
     static bool IsPaintReady();

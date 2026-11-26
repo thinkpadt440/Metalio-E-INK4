@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <utility>
 
 namespace harness {
 namespace {
@@ -41,11 +42,22 @@ bool Seq(const std::string& s,uint64_t& n) {
     return n!=0;
 }
 }  // namespace
-bool ValidConfig(const Config& c) {
-    const size_t start=c.base_url.rfind("https://",0)==0?8:c.base_url.rfind("http://",0)==0?7:0;
-    if(!start||c.base_url.size()<=start||c.base_url.size()>256||!Id(c.device_id)||
-       c.firmware_version.empty()||c.firmware_version.size()>64||!Id(c.command_prefix)||c.command_prefix.size()>80)return false;
-    const std::string authority=c.base_url.substr(start);
+std::string NormalizeServerOrigin(std::string origin) {
+    constexpr char whitespace[] = " \t\r\n";
+    const auto first = origin.find_first_not_of(whitespace);
+    if (first == std::string::npos) return {};
+    origin = origin.substr(first, origin.find_last_not_of(whitespace) - first + 1);
+    const auto scheme = origin.find("://");
+    if (scheme != std::string::npos && origin.size() > scheme + 3 && origin.back() == '/') {
+        origin.pop_back();
+    }
+    return origin;
+}
+
+bool ValidServerOrigin(const std::string& origin) {
+    const size_t start = origin.rfind("https://", 0) == 0 ? 8 : origin.rfind("http://", 0) == 0 ? 7 : 0;
+    if (!start || origin.size() <= start || origin.size() > kMaxServerOriginLength) return false;
+    const std::string authority = origin.substr(start);
     for(unsigned char ch:authority)if(ch<=32||ch>=127||ch=='/'||ch=='?'||ch=='#'||ch=='@'||ch=='\\')return false;
     const auto colon=authority.find(':');
     const auto host=authority.substr(0,colon);
@@ -58,6 +70,13 @@ bool ValidConfig(const Config& c) {
     }
     return true;
 }
+
+bool ValidConfig(const Config& c) {
+    return ValidServerOrigin(c.base_url) && Id(c.device_id) &&
+           !c.firmware_version.empty() && c.firmware_version.size() <= 64 &&
+           Id(c.command_prefix) && c.command_prefix.size() <= 80;
+}
+
 std::string UrlEncode(const std::string& value) {
     const char* hex="0123456789ABCDEF";std::string result;
     for(unsigned char c:value) {
@@ -130,11 +149,14 @@ std::vector<std::string> Client::DrainEvents() {
 }
 void Client::Stop() {
     if(stopped_)return;
+    if (ApprovalPending()) FinishApproval({}, "confirmation_unknown");
     stopped_=true;++generation_;io_.Close();
     {std::lock_guard<std::mutex> lock(input_mutex_);input_.clear();input_bytes_=0;overflow_=false;}
     pending_.clear();versions_.clear();events_.clear();event_bytes_=0;state_=ConnectionState::Stopped;connection_id_.clear();Publish();
 }
 void Client::Retry(const std::string& reason) {
+    if (ApprovalPending()) FinishApproval({}, "confirmation_unknown");
+    if (CancelPending()) FinishCancel("confirmation_unknown");
     ++generation_;io_.Close();
     {std::lock_guard<std::mutex> lock(input_mutex_);input_.clear();input_bytes_=0;overflow_=false;}
     static const uint32_t delays[]={1000,2000,4000,8000,16000,30000};
@@ -146,16 +168,20 @@ std::string Client::NewCommand() {
     ++command_counter_;
     return config_.command_prefix+"_"+std::to_string(command_counter_);
 }
-bool Client::SendControl(const char* type,const std::string& command,const std::string& data) {
+bool Client::SendControl(const char* type,const std::string& command,const std::string& data,const RunInfo* run) {
     Json root(cJSON_CreateObject(),cJSON_Delete);auto payload=Parse(data);
     if(!root||!payload)return false;
     cJSON_AddNumberToObject(root.get(),"v",1);cJSON_AddStringToObject(root.get(),"type",type);
     cJSON_AddStringToObject(root.get(),"command_id",command.c_str());cJSON_AddItemToObject(root.get(),"data",payload.release());
+    if (run && (!cJSON_AddStringToObject(root.get(), "session_id", run->session_id.c_str()) ||
+                !cJSON_AddStringToObject(root.get(), "run_id", run->id.c_str()))) return false;
     auto body=Print(root.get());return !body.empty()&&body.size()<=kMaxJsonBytes&&io_.SendText(body);
 }
 void Client::Tick(bool network_ready) {
     if(stopped_||!valid_config_)return;
     if(!network_ready) {
+        if (ApprovalPending()) FinishApproval({}, "confirmation_unknown");
+        if (CancelPending()) FinishCancel("confirmation_unknown");
         if(state_!=ConnectionState::WaitingNetwork) {
             ++generation_;io_.Close();
             {std::lock_guard<std::mutex> lock(input_mutex_);input_.clear();input_bytes_=0;overflow_=false;}
@@ -196,6 +222,8 @@ void Client::Tick(bool network_ready) {
         if(input.kind==Input::Pong)last_pong_=std::max(last_pong_,input.received_at);else Handle(input.text);
         if(state_==ConnectionState::Backoff)return;
     }
+    if (ApprovalPending() && clock_() >= approval_deadline_) FinishApproval({}, "confirmation_unknown");
+    if (CancelPending() && clock_() >= cancel_deadline_) FinishCancel("confirmation_unknown");
     if(state_==ConnectionState::Hello&&clock_()>=deadline_){Retry("hello_timeout");return;}
     if(state_==ConnectionState::Syncing) {
         if(clock_()>=sync_deadline_){Retry("sync_timeout");return;}
@@ -245,6 +273,109 @@ bool Client::ApplyEvent(const std::string& type,const cJSON* root) {
     }
     return true;
 }
+bool Client::SendCancel(const RunInfo& run) {
+    if (state_ != ConnectionState::Ready || CancelPending() || !Id(run.id) || !Id(run.session_id)) return false;
+    cancel_command_ = NewCommand();
+    cancellation_ = {run.session_id, run.id, {}};
+    cancel_deadline_ = clock_() + 10000;
+    if (!SendControl("run.cancel", cancel_command_, "{}", &run)) FinishCancel("confirmation_unknown");
+    return true;
+}
+
+void Client::FinishCancel(std::string error) {
+    cancel_command_.clear();
+    cancellation_.error = std::move(error);
+    cancel_result_ = std::move(cancellation_);
+}
+
+std::optional<CancelResult> Client::TakeCancelResult() {
+    return std::exchange(cancel_result_, std::nullopt);
+}
+
+bool Client::HandleCancelAck(const cJSON* root) {
+    if (!CancelPending() || String(root, "command_id") != cancel_command_) return false;
+    const auto* ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    const auto* data = cJSON_GetObjectItemCaseSensitive(root, "data");
+    if (cJSON_IsTrue(ok) && String(data, "run_id") == cancellation_.run_id &&
+        String(data, "status") == "cancelling") {
+        FinishCancel("");
+    } else {
+        auto error = String(cJSON_GetObjectItemCaseSensitive(root, "error"), "code");
+        FinishCancel(cJSON_IsFalse(ok) && !error.empty() ? std::move(error) : "confirmation_unknown");
+    }
+    return true;
+}
+
+bool Client::SendApproval(const ApprovalRequest& request) {
+    const auto& info = request.approval;
+    if (state_ != ConnectionState::Ready || ApprovalPending() || !info ||
+        info->state != ApprovalState::Pending || !info->version ||
+        !Id(info->id) || !Id(info->session_id) || !Id(info->run_id) ||
+        (request.decision == ApprovalDecision::AllowOnce && !info->actionable)) return false;
+
+    Json payload(cJSON_CreateObject(), cJSON_Delete);
+    const char* decision = request.decision == ApprovalDecision::AllowOnce ? "approve_once" : "reject";
+    if (!payload || !cJSON_AddStringToObject(payload.get(), "approval_id", info->id.c_str()) ||
+        !cJSON_AddNumberToObject(payload.get(), "expected_approval_version", info->version) ||
+        !cJSON_AddStringToObject(payload.get(), "decision", decision)) return false;
+
+    RunInfo run;
+    run.id = info->run_id;
+    run.session_id = info->session_id;
+    deciding_ = info;
+    deciding_decision_ = request.decision;
+    approval_command_ = NewCommand();
+    approval_deadline_ = clock_() + 10000;
+    if (!SendControl("approval.respond", approval_command_, Print(payload.get()), &run)) {
+        FinishApproval({}, "confirmation_unknown");
+    }
+    return true;
+}
+
+void Client::FinishApproval(ApprovalPtr actual, std::string error) {
+    approval_command_.clear();
+    approval_result_ = ApprovalResult{std::move(deciding_), std::move(actual), std::move(error)};
+}
+
+std::optional<ApprovalResult> Client::TakeApprovalResult() {
+    return std::exchange(approval_result_, std::nullopt);
+}
+
+bool Client::HandleApprovalAck(const cJSON* root, const std::string& text) {
+    if (!ApprovalPending() || String(root, "command_id") != approval_command_) return false;
+    const auto* ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    const auto* data = cJSON_GetObjectItemCaseSensitive(root, "data");
+    const auto state = String(data, "status");
+    uint32_t version = 0;
+    const char* expected = deciding_decision_ == ApprovalDecision::AllowOnce ? "approved" : "rejected";
+    if (cJSON_IsTrue(ok) && String(data, "approval_id") == deciding_->id && state == expected &&
+        Uint(data, "approval_version", version) && version > deciding_->version) {
+        auto actual = std::make_shared<ApprovalInfo>();
+        actual->id = deciding_->id;
+        actual->session_id = deciding_->session_id;
+        actual->run_id = deciding_->run_id;
+        actual->version = version;
+        actual->state = state == "approved" ? ApprovalState::Approved : ApprovalState::Rejected;
+        FinishApproval(std::move(actual), {});
+    } else if (cJSON_IsFalse(ok)) {
+        const auto* error = cJSON_GetObjectItemCaseSensitive(root, "error");
+        const auto* details = cJSON_GetObjectItemCaseSensitive(error, "details");
+        const auto code = String(error, "code");
+        const auto wire = RawJsonMember(RawJsonMember(RawJsonMember(text, "error"), "details"), "current_approval");
+        FinishApproval(ReadApproval(cJSON_GetObjectItemCaseSensitive(details, "current_approval"), wire),
+                       code.empty() ? "confirmation_unknown" : code);
+    } else {
+        FinishApproval({}, "confirmation_unknown");
+    }
+    return true;
+}
+
+void Client::AdvanceUpload(std::shared_ptr<UploadTicket> ticket) {
+    const auto connection = state_ == ConnectionState::Ready ? connection_id_ : "";
+    if (upload_.Step(io_, std::move(ticket), connection, clock_(), [this] { return NewCommand(); })) {
+        Retry("audio_upload_reconnect");
+    }
+}
 void Client::Handle(const std::string& text) {
     auto root=Parse(text);
     if(!root||!cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(root.get(),"v"))||
@@ -262,6 +393,11 @@ void Client::Handle(const std::string& text) {
         reading_snapshot_=true;sync_ack_=false;state_=ConnectionState::Syncing;return;
     }
     if(type=="ack") {
+        if (state_ == ConnectionState::Ready) {
+            if (HandleCancelAck(root.get()) || HandleApprovalAck(root.get(), text)) return;
+            if (upload_.Ack(root.get())) Retry("audio_upload_reconnect");
+            return;
+        }
         if(state_!=ConnectionState::Syncing||reading_snapshot_||String(root.get(),"command_id")!=sync_command_){Retry("unexpected_ack");return;}
         if(!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root.get(),"ok"))||String(data,"status")!="syncing"){Retry("sync_rejected");return;}
         sync_ack_=true;return;
@@ -276,6 +412,25 @@ void Client::Handle(const std::string& text) {
     if(seq<=last_seq_)return;
     if(last_seq_==UINT64_MAX||seq!=last_seq_+1){Retry("sequence_gap");return;}
     if(!ApplyEvent(type,root.get())){Retry("invalid_resource");return;}
+    if (CancelPending() && type.rfind("run.", 0) == 0 && type != "run.progress" &&
+        String(root.get(), "run_id") == cancellation_.run_id &&
+        String(root.get(), "session_id") == cancellation_.session_id) {
+        const auto state = String(data, "status");
+        const auto version = versions_.find("run:" + cancellation_.run_id);
+        uint32_t event_version = 0;
+        if (version != versions_.end() && Uint(data, "state_version", event_version) &&
+            version->second == event_version &&
+            (state == "cancelling" || state == "cancelled" || state == "completed" || state == "failed")) {
+            FinishCancel("");
+        }
+    }
+    if (ApprovalPending() && type == "approval.resolved" &&
+        String(root.get(), "session_id") == deciding_->session_id &&
+        String(root.get(), "run_id") == deciding_->run_id) {
+        const auto actual = ReadApproval(data, RawJsonMember(text, "data"));
+        if (actual && actual->id == deciding_->id && actual->version > deciding_->version &&
+            actual->state != ApprovalState::Pending) FinishApproval(actual, {});
+    }
     if(events_.size()>=kQueueCount||event_bytes_+text.size()>kQueueBytes){Retry("event_queue_full");return;}
     events_.push_back(text);event_bytes_+=text.size();last_seq_=seq;
 }

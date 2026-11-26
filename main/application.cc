@@ -1,4 +1,5 @@
 #include "harness/service.h"
+#include "device_time.h"
 #include "application.h"
 #include "board.h"
 #include "power_policy.h"
@@ -1193,6 +1194,10 @@ void Application::FlushPendingXiaozhiVoice() {
 }
 
 void Application::Start() {
+#ifdef CONFIG_BOARD_TYPE_METALIO_E_INK_4
+    device_time::InitializeBeijingTimezone();
+#endif
+    harness::InitializeServerOrigin();
     chat_cloud::InitializeFromNvs();
     // UI 语言：NVS ui/language，无则 LANG_DEFAULT_CODE（跟 CONFIG_LANGUAGE_*）
     Lang::InitFromNvs();
