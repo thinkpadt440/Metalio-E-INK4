@@ -54,6 +54,7 @@ class ApprovalTracker {
 public:
     ApprovalView View(const std::string& id) const;
     std::vector<ApprovalPtr> Pending() const;
+    bool TakePendingNotice();
     void Offline();
     void Snapshot(const std::vector<Resource>& resources);
     void Observe(const std::string& event);
@@ -69,6 +70,7 @@ private:
         ApprovalView view;
         uint64_t order = 0;
         uint64_t lookup_after = 0;
+        bool notified = false;
     };
 
     void Apply(ApprovalPtr approval, bool authoritative);

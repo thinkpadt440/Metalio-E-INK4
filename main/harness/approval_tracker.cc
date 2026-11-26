@@ -174,6 +174,21 @@ std::vector<ApprovalPtr> ApprovalTracker::Pending() const {
     return pending;
 }
 
+bool ApprovalTracker::TakePendingNotice() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!online_) return false;
+
+    bool notify = false;
+    for (auto& pair : entries_) {
+        auto& entry = pair.second;
+        if (entry.notified || entry.view.checking ||
+            entry.view.info->state != ApprovalState::Pending) continue;
+        entry.notified = true;
+        notify = true;
+    }
+    return notify;
+}
+
 void ApprovalTracker::Apply(ApprovalPtr approval, bool authoritative) {
     if (!approval) return;
     auto found = entries_.find(approval->id);

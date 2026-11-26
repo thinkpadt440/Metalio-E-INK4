@@ -1,5 +1,8 @@
 #include "socket_io.h"
+#include "json.h"
 #include "transport.h"
+#include <cJSON.h>
+#include <cstring>
 #include <network_interface.h>
 #include <http.h>
 #include <web_socket.h>
@@ -53,17 +56,49 @@ HttpReply SocketIo::Request(const std::string& method,const std::string& path,co
        path.rfind("/api/v1/",0)!=0||path.size()>4096||body.size()>kMaxJsonBytes||
        (method!="PATCH"&&!body.empty())){result.error="invalid_http_request";return result;}
     for(unsigned char c:path)if(c<=32||c==127){result.error="invalid_http_request";return result;}
+    return RequestHttp(config_, method, path, body, 10000, 4);
+}
+
+ServerHealthResult SocketIo::CheckHealth(const Config& config) {
+    if (!ValidConfig(config)) return {ServerHealth::InvalidAddress};
+    // Use a separate HTTP socket so the test can run alongside the saved server's connection.
+    const auto response = RequestHttp(config, "GET", "/health", "", 5000, 5);
+    const int status = response.status;
+    if (status <= 0) return {ServerHealth::Unreachable};
+    const bool ok = status >= 200 && status < 300;
+    if (!response.error.empty()) {
+        return {ok ? ServerHealth::InvalidResponse : ServerHealth::HttpError, status};
+    }
+
+    std::unique_ptr<cJSON, decltype(&cJSON_Delete)> json(
+        ParseJsonMessage(response.body.data(), response.body.size()), cJSON_Delete);
+    const auto* data = cJSON_GetObjectItemCaseSensitive(json.get(), "data");
+    const auto* health = cJSON_IsObject(data) ? data : json.get();
+    const auto* health_status = cJSON_GetObjectItemCaseSensitive(health, "status");
+    const auto* harness = cJSON_GetObjectItemCaseSensitive(health, "harness_connected");
+    if (cJSON_IsString(health_status) && cJSON_IsFalse(harness)) {
+        return {ServerHealth::HarnessUnavailable, status};
+    }
+    if (!ok) return {ServerHealth::HttpError, status};
+    if (!cJSON_IsString(health_status) || std::strcmp(health_status->valuestring, "ok") != 0 ||
+        (harness && !cJSON_IsBool(harness))) return {ServerHealth::InvalidResponse, status};
+    return {cJSON_IsTrue(harness) ? ServerHealth::Healthy : ServerHealth::GatewayOnly, status};
+}
+
+HttpReply SocketIo::RequestHttp(const Config& config, const std::string& method, const std::string& path,
+                               const std::string& body, int timeout_ms, int socket_id) {
+    HttpReply result;
     const auto started=std::chrono::steady_clock::now();
-    auto remaining=[&](){return 10000-std::chrono::duration_cast<std::chrono::milliseconds>(
+    auto remaining=[&](){return timeout_ms-std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now()-started).count();};
-    auto http=network_.CreateHttp(4);if(!http){result.error="http_unavailable";return result;}
+    auto http=network_.CreateHttp(socket_id);if(!http){result.error="http_unavailable";return result;}
     struct Guard {Http* http;~Guard(){http->Close();}} guard{http.get()};
-    http->SetTimeout(10000);http->SetKeepAlive(false);
-    http->SetHeader("X-Device-ID",config_.device_id);
+    http->SetTimeout(timeout_ms);http->SetKeepAlive(false);
+    http->SetHeader("X-Device-ID",config.device_id);
     http->SetHeader("Accept","application/json");
     http->SetHeader("Cache-Control","no-store");
     if(method=="PATCH"){http->SetHeader("Content-Type","application/json");http->SetContent(std::string(body));}
-    if(!http->Open(method,config_.base_url+path)){result.error="http_transport";return result;}
+    if(!http->Open(method,config.base_url+path)){result.error="http_transport";return result;}
     result.status=http->GetStatusCode();
     auto content_type=http->GetResponseHeader("content-type");
     std::transform(content_type.begin(),content_type.end(),content_type.begin(),[](unsigned char c){return std::tolower(c);});

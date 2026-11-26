@@ -17,17 +17,20 @@ constexpr const char* kScreenId = "home";
 constexpr int kRangeCount = 3;
 constexpr const char* kRanges[] = {"all", "30d", "7d"};
 constexpr uint32_t kRefreshIntervalMs = 15000;
+constexpr uint32_t kApprovalIntervalMs = 1000;
 
 struct DashboardUi {
     lv_obj_t* screen = nullptr;
     lv_obj_t* values[6] = {};
     lv_obj_t* range_buttons[kRangeCount] = {};
     lv_obj_t* data_status = nullptr;
+    lv_obj_t* approval_notice = nullptr;
     lv_timer_t* timer = nullptr;
     int selected_range = 0;
     std::optional<harness::Overview> metrics[kRangeCount];
     std::shared_ptr<harness::CatalogCall> pending;
     uint32_t last_request = 0;
+    uint32_t last_approval_check = 0;
     bool request_due = true;
     bool request_failed = false;
     bool was_ready = false;
@@ -138,10 +141,33 @@ void RefreshMetrics(DashboardUi* ui) {
     product_ui::SetText(ui->data_status, status);
 }
 
+void RefreshApprovalNotice(DashboardUi* ui) {
+    ui->last_approval_check = lv_tick_get();
+    const auto count = harness::ServiceReady() ? harness::PendingApprovals().size() : 0;
+    auto* notice = ui->approval_notice;
+    const bool hidden = lv_obj_has_flag(notice, LV_OBJ_FLAG_HIDDEN);
+    if (!count) {
+        if (!hidden) {
+            HapticDetachClick(notice);
+            lv_obj_add_flag(notice, LV_OBJ_FLAG_HIDDEN);
+        }
+        return;
+    }
+
+    char text[48];
+    std::snprintf(text, sizeof(text), "待审批 %u · 点击查看", static_cast<unsigned>(count));
+    product_ui::SetText(lv_obj_get_child(notice, 0), text);
+    if (hidden) {
+        lv_obj_clear_flag(notice, LV_OBJ_FLAG_HIDDEN);
+        HapticAttachClick(notice);
+    }
+}
+
 void OnTimer(lv_timer_t* timer) {
     auto* ui = static_cast<DashboardUi*>(lv_timer_get_user_data(timer));
     if (lv_screen_active() != ui->screen || StandbyScreen::IsActive()) return;
     RefreshMetrics(ui);
+    if (lv_tick_elaps(ui->last_approval_check) >= kApprovalIntervalMs) RefreshApprovalNotice(ui);
 }
 
 void OnDelete(lv_event_t* event) {
@@ -224,8 +250,11 @@ lv_obj_t* DashboardScreen::Create() {
     lv_obj_set_style_text_line_space(ui->values[5], 4, 0);
     lv_obj_set_height(ui->values[5], card_height - 50);
 
-    ui->data_status = product_ui::Label(body, 0, first_y + 3 * card_height + 2 * gap + 8,
-                                        width, "");
+    const int cards_bottom = first_y + 3 * card_height + 2 * gap;
+    ui->data_status = product_ui::Label(body, 0, cards_bottom + 8, width, "");
+    ui->approval_notice = product_ui::Button(body, 0, cards_bottom + 52, width, 52, "", OnAssistant);
+    lv_obj_add_flag(ui->approval_notice, LV_OBJ_FLAG_HIDDEN);
+    HapticDetachClick(ui->approval_notice);
     const int button_y = height - 72;
     const int button_width = (width - 12) / 2;
     product_ui::Button(body, 0, button_y, button_width, 58, "进入助手",
@@ -234,6 +263,7 @@ lv_obj_t* DashboardScreen::Create() {
                        OnSettings);
 
     RefreshMetrics(ui);
+    RefreshApprovalNotice(ui);
     ui->timer = lv_timer_create(OnTimer, 250, ui);
     lv_obj_add_event_cb(ui->screen, OnDelete, LV_EVENT_DELETE, ui);
     ScreenSetIsHome(true);

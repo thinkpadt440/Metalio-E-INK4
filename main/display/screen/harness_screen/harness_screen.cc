@@ -15,6 +15,7 @@
 #include "harness_voice.h"
 #include "haptic_feedback.h"
 #include "product_ui.h"
+#include "ptt_wave.h"
 #include "standby_screen/standby_screen.h"
 #include "vk_key_handler.h"
 
@@ -96,6 +97,11 @@ struct TranscriptRow {
 
 struct HarnessUi {
     lv_obj_t* screen = nullptr;
+    lv_obj_t* ptt_wave = nullptr;
+    lv_obj_t* clock_label = nullptr;
+    lv_obj_t* notification_label = nullptr;
+    lv_timer_t* ptt_wave_timer = nullptr;
+    uint32_t ptt_wave_frame = 0;
     lv_obj_t* sessions_panel = nullptr;
     lv_obj_t* sessions_status = nullptr;
     Row rows[kSessionsPerScreen];
@@ -412,12 +418,49 @@ void RenderTranscript(HarnessUi* ui, bool visible, int top) {
     }
 }
 
+void StopPttWave(HarnessUi* ui) {
+    if (!ui->ptt_wave_timer) return;
+    lv_timer_delete(ui->ptt_wave_timer);
+    ui->ptt_wave_timer = nullptr;
+    Show(ui->ptt_wave, false);
+    lv_obj_remove_local_style_prop(ui->clock_label, LV_STYLE_TEXT_OPA, LV_PART_MAIN);
+}
+
+void UpdatePttWaveFrame(HarnessUi* ui) {
+    const bool show = lv_obj_has_flag(ui->notification_label, LV_OBJ_FLAG_HIDDEN);
+    if (show == lv_obj_has_flag(ui->ptt_wave, LV_OBJ_FLAG_HIDDEN)) Show(ui->ptt_wave, show);
+    if (show) DrawPttWaveFrame(ui->ptt_wave, ui->ptt_wave_frame++);
+}
+
+void UpdatePttWave(HarnessUi* ui, bool show) {
+    if (!show) {
+        StopPttWave(ui);
+        return;
+    }
+    if (ui->ptt_wave_timer) return;
+    ui->ptt_wave_timer = lv_timer_create([](lv_timer_t* timer) {
+        auto* ui = static_cast<HarnessUi*>(lv_timer_get_user_data(timer));
+        if (!BootKey_IsHeld() || StandbyScreen::IsActive() || lv_screen_active() != ui->screen) {
+            StopPttWave(ui);
+            return;
+        }
+        UpdatePttWaveFrame(ui);
+    }, kPttWaveFrameMs, ui);
+    if (!ui->ptt_wave_timer) return;
+
+    ui->ptt_wave_frame = 0;
+    // The shared status bar keeps updating its clock and managing notifications.
+    lv_obj_set_style_text_opa(ui->clock_label, LV_OPA_TRANSP, LV_PART_MAIN);
+    UpdatePttWaveFrame(ui);
+}
+
 void RenderChat(HarnessUi* ui, bool ready) {
     const auto voice = ui->voice_used ? harness_voice::Snapshot() : harness_voice::State{};
     product_ui::SetText(ui->session_title,
                         (ui->session ? ui->session->title : ui->target_title).c_str());
     const bool preparing = voice.phase == harness_voice::Phase::Preparing;
     const bool recording = voice.phase == harness_voice::Phase::Recording;
+    UpdatePttWave(ui, recording && BootKey_IsHeld());
     const auto task = ui->session ? TrackedRun(ui->session->id) : RunView{};
     RenderTask(ui, task, ready, preparing || recording);
     product_ui::SetText(ui->status, preparing ? "接收（准备录音）"
@@ -657,6 +700,7 @@ void ShowSessions(HarnessUi* ui) {
     ui->session_call.reset();
     ui->record_after_load = false;
     ui->view = View::Sessions;
+    StopPttWave(ui);
     ui->history.Bind("");
     ui->approval_panel.Close();
     ui->last_auto_approval.clear();
@@ -942,10 +986,15 @@ void OnTimer(lv_timer_t* timer) {
     auto* ui = static_cast<HarnessUi*>(lv_timer_get_user_data(timer));
     if (lv_screen_active() == ui->screen && !StandbyScreen::IsActive()) Update(ui);
 }
-void OnUnload(lv_event_t*) { ++s_boot_release; harness_voice::End(); }
+void OnUnload(lv_event_t* event) {
+    StopPttWave(static_cast<HarnessUi*>(lv_event_get_user_data(event)));
+    ++s_boot_release;
+    harness_voice::End();
+}
 void OnDelete(lv_event_t* event) {
     auto* ui = static_cast<HarnessUi*>(lv_event_get_user_data(event));
     if (ui->timer) lv_timer_delete(ui->timer);
+    if (ui->ptt_wave_timer) lv_timer_delete(ui->ptt_wave_timer);
     delete ui;
 }
 void OpenAsync(void* argument) {
@@ -965,6 +1014,7 @@ void HarnessScreen::RequestOpen(bool record_if_held) {
 }
 
 void HarnessScreen::OnEnterStandby() {
+    if (auto* ui = ActiveUi()) StopPttWave(ui);
     ++s_boot_release;
     harness_voice::End();
 }
@@ -975,6 +1025,9 @@ lv_obj_t* HarnessScreen::Create() {
     lv_obj_set_user_data(ui->screen, ui);
 
     const auto status = ScreenCreateStatusBar(ui->screen);
+    ui->clock_label = status.status_label;
+    ui->notification_label = status.notification_label;
+    ui->ptt_wave = CreatePttWave(ui->screen, status.height);
     const int width = LV_HOR_RES - 32;
     const int top = status.height + 12;
     const int height = LV_VER_RES - top;
@@ -1048,7 +1101,7 @@ lv_obj_t* HarnessScreen::Create() {
 
     ui->approval_panel.Create(body, width, height);
     ui->timer = lv_timer_create(OnTimer, 150, ui);
-    lv_obj_add_event_cb(ui->screen, OnUnload, LV_EVENT_SCREEN_UNLOADED, nullptr);
+    lv_obj_add_event_cb(ui->screen, OnUnload, LV_EVENT_SCREEN_UNLOADED, ui);
     lv_obj_add_event_cb(ui->screen, OnDelete, LV_EVENT_DELETE, ui);
     ScreenSetIsHome(false);
     VkKey_AttachScreen(ui->screen, kScreenId, VkKeyScreenDesc{

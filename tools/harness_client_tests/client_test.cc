@@ -203,6 +203,30 @@ int main(){
         f.io.Emit(Event(2,"run.state",RunData("running",2)));f.Tick();
         Check(f.client.Resources().at(0).version==3,"old resource overwrite");
     });
+    test("new pending approvals notify once across delivery and reconnect", [] {
+        ApprovalTracker tracker;
+        const std::string approval = R"({"approval_id":"approval_1","session_id":"sess_1","run_id":"run_1","status":"pending","approval_version":1,"operation":null})";
+        const std::vector<Resource> snapshot{{"approval", "approval_1", "sess_1", approval, 1}};
+        tracker.Snapshot({});
+        tracker.Observe(Event(1, "approval.requested", approval));
+        Check(tracker.TakePendingNotice() && !tracker.TakePendingNotice(), "new approval must notify once");
+
+        tracker.Observe(Event(2, "approval.requested", approval));
+        tracker.Offline();
+        Check(!tracker.TakePendingNotice(), "offline approval must not notify");
+        tracker.Snapshot(snapshot);
+        tracker.Observe(Event(1, "approval.requested", approval));
+        Check(!tracker.TakePendingNotice(), "replayed approval notified again");
+
+        ApprovalTracker after_sleep;
+        after_sleep.Snapshot(snapshot);
+        Check(!after_sleep.TakePendingNotice(), "unverified snapshot must wait for lookup");
+        auto json = cJSON_Parse(approval.c_str());
+        after_sleep.LookupResult("approval_1", ReadApproval(json, approval), false);
+        cJSON_Delete(json);
+        Check(after_sleep.TakePendingNotice() && !after_sleep.TakePendingNotice(),
+              "new approval discovered by sync must notify once after lookup");
+    });
     test("terminal resource cannot be resurrected by old state",[]{
         Fixture f;f.Ready();f.io.Emit(Event(1,"run.state",RunData("running",2)));f.Tick();
         f.io.Emit(Event(2,"run.completed",RunData("completed",3)));f.Tick();

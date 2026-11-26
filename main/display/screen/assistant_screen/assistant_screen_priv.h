@@ -37,16 +37,6 @@ constexpr int kMaxPages = 1500;  // UI 会话最多保留页数；超出从 flow
 constexpr uint64_t kStreamCoalesceUs = 400000;  // 流式包合并窗口：主循环不再每包重排，翻页才有空档
 constexpr int64_t kStreamPaintMinUs = 500000;  // 流式跟刷最少间隔（仅影响页）；翻页本身不节流
 
-constexpr int kPttWaveBars = 27; // 相对原 11 条约 2.5 倍横向跨度
-constexpr int kPttWaveFrames = 16;
-constexpr lv_coord_t kPttWaveBarW = 2;
-constexpr lv_coord_t kPttWaveBarGap = 2;
-constexpr uint32_t kPttWaveFrameMs = 55;
-// 单周期高度曲线（相对 0..44），按 ptt_wave_max_h 等比缩放；中间条先动、向两侧扩散。
-constexpr uint8_t kPttWaveCurve[kPttWaveFrames] = {
-    12, 16, 22, 30, 38, 44, 42, 36, 28, 20, 14, 10, 12, 18, 26, 34,
-};
-
 // 会话 flow/pages 与其中字符串一律 SPIRAM，减轻内部 DRAM。
 template <typename T>
 struct Assistant_SpirAlloc {
@@ -148,9 +138,7 @@ struct AssistantUiState {
         bool touch_ptt_finger_down = false;         // hit 层 PRESSED 尚未抬起（LVGL 任务内）
         bool touch_suppress_click = false;          // 长按 PTT 臂听后抑制紧随 CLICKED
         bool ptt_wave_visible = false;
-        lv_coord_t ptt_wave_max_h = 20;  // 竖条最大高度（Create 时按状态栏高度的约一半写入）
-        lv_obj_t* ptt_wave_bars[kPttWaveBars] = {};
-        uint8_t ptt_wave_frame = 0;
+        uint32_t ptt_wave_frame = 0;
     } ptt;
 
     struct Chrome {
@@ -234,8 +222,6 @@ void Assistant_ApplyPttWave(bool show);
 void Assistant_StopPttWaveAnim();
 /** @brief 创建全屏触控 PTT 命中层 */
 lv_obj_t* Assistant_CreateTouchPttHitLayer(lv_obj_t* scr);
-/** @brief 创建状态栏波形宿主控件 */
-lv_obj_t* Assistant_CreatePttWaveHost(lv_obj_t* parent, lv_coord_t bar_h);
 /** @brief 翻页；dir=-1 上一页，+1 下一页 */
 bool Assistant_TurnPage(int dir);
 /** @brief 按内容区几何全量重分页 */

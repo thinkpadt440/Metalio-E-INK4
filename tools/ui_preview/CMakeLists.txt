@@ -16,6 +16,7 @@ if(NOT EXISTS "${CJSON_ROOT}/cJSON.c")
     message(FATAL_ERROR "Supply CJSON_ROOT or source ESP-IDF export.sh")
 endif()
 target_sources(preview PRIVATE ${ROOT}/main/device_time.cc
+    ${ROOT}/main/display/screen/ptt_wave.cc
     ${ROOT}/main/display/screen/harness_screen/chat_reader.cc
     ${ROOT}/main/display/screen/harness_screen/approval_panel.cc
     ${ROOT}/main/harness/history.cc ${ROOT}/main/harness/json.cc ${CJSON_ROOT}/cJSON.c)

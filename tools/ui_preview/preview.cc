@@ -13,6 +13,7 @@
 #include "settings_screen/settings_screen.h"
 #include "standby_screen/standby_screen.h"
 #include "screen_common.h"
+#include "ptt_wave.h"
 #include "vk_key_handler.h"
 #include "fontpack_lvgl.h"
 #include "device_time.h"
@@ -45,6 +46,7 @@ esp_err_t esp_partition_mmap(const esp_partition_t*,size_t offset,size_t,int,con
 void esp_partition_munmap(esp_partition_mmap_handle_t) {}
 const char* esp_err_to_name(int) { return "host"; }
 void HapticAttachClick(lv_obj_t*) {}
+void HapticDetachClick(lv_obj_t*) {}
 bool DisplayUiSetOrient(int) { return false; }
 }
 bool SettingsNetworkTab_IsWifi() { return true; }
@@ -66,7 +68,21 @@ bool ScreenLvAsync(void (*cb)(void*),void* data) { return lv_async_call(cb,data)
 EpdStatusBar ScreenCreateStatusBar(lv_obj_t* screen) {
     EpdStatusBar status;status.height=45;
     auto* label=lv_label_create(screen);lv_obj_set_style_text_font(label,fontpack_lv_font_ui(),0);
-    lv_label_set_text(label,"Wi-Fi                    100%");lv_obj_set_pos(label,16,8);
+    lv_label_set_text(label, "Wi-Fi");
+    lv_obj_set_pos(label, 16, 8);
+    auto* battery = lv_label_create(screen);
+    lv_obj_set_style_text_font(battery, fontpack_lv_font_ui(), 0);
+    lv_label_set_text(battery, "100%");
+    lv_obj_align(battery, LV_ALIGN_TOP_RIGHT, -16, 8);
+    status.status_label = lv_label_create(screen);
+    lv_obj_set_style_text_font(status.status_label, fontpack_lv_font_ui(), 0);
+    lv_label_set_text(status.status_label, "12:34");
+    lv_obj_align(status.status_label, LV_ALIGN_TOP_MID, 0, 8);
+    status.notification_label = lv_label_create(screen);
+    lv_obj_set_style_text_font(status.notification_label, fontpack_lv_font_ui(), 0);
+    lv_label_set_text(status.notification_label, "设备通知");
+    lv_obj_align(status.notification_label, LV_ALIGN_TOP_MID, 0, 8);
+    lv_obj_add_flag(status.notification_label, LV_OBJ_FLAG_HIDDEN);
     return status;
 }
 lv_obj_t* SettingsScreen::Create() {
@@ -291,6 +307,33 @@ int main() {
     assert(Find(lv_screen_active(),"5,980"));
     int baseline=Timers();
 
+    const char* dashboard_notice = "待审批 1 · 点击查看";
+    assert(!Find(lv_screen_active(), dashboard_notice));
+    auto dashboard_approval = std::make_shared<ApprovalInfo>();
+    dashboard_approval->id = "approval_dashboard";
+    dashboard_approval->session_id = firmware.id;
+    dashboard_approval->reason = "核对联调结果。";
+    PreviewApproval().info = dashboard_approval;
+    Pump();Pump();
+    assert(Find(lv_screen_active(), dashboard_notice));
+    Save("dashboard-approval");Validate(lv_screen_active());
+
+    PreviewReady() = false;
+    Pump();Pump();
+    assert(!Find(lv_screen_active(), dashboard_notice));
+    PreviewReady() = true;
+    Pump();Pump();
+    Click(dashboard_notice);
+    assert(HarnessScreen::IsActive() && !Find(lv_screen_active(), "审批详情"));
+    Click("待审批 1");
+    assert(Find(lv_screen_active(), "核对联调结果。"));
+    Click("返回");
+    PreviewApproval() = {};
+    Pump();
+    assert(!Find(lv_screen_active(), "待审批 1"));
+    ScreenGoHome();Pump();
+    assert(!Find(lv_screen_active(), dashboard_notice));
+
     assert(registry["home"].on_boot_click());Pump();assert(HarnessScreen::IsActive());
     Validate(lv_screen_active());Save("assistant-sessions");
     assert(Find(lv_screen_active(),"最近活动"));
@@ -486,12 +529,44 @@ int main() {
     assert(HarnessScreen::IsActive() && audio.active);
     assert(Find(lv_screen_active(),"固定闲聊"));
     assert(Find(lv_screen_active(),"接收（录音中）"));
+    auto* recording_screen = lv_screen_active();
+    auto* clock = Find(recording_screen, "12:34");
+    lv_obj_t* wave = nullptr;
+    lv_obj_t* notice = nullptr;
+    for (unsigned i = 0; i < lv_obj_get_child_count(recording_screen); ++i) {
+        auto* child = lv_obj_get_child(recording_screen, i);
+        if (lv_obj_get_child_count(child) == 27) wave = child;
+        if (lv_obj_check_type(child, &lv_label_class) &&
+            std::strcmp(lv_label_get_text(child), "设备通知") == 0) notice = child;
+    }
+    assert(wave && !lv_obj_has_flag(wave, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_obj_get_y(wave) + lv_obj_get_height(wave) <= 45);
+    assert(clock && lv_obj_get_style_text_opa(clock, LV_PART_MAIN) == LV_OPA_TRANSP);
+    auto* center_bar = lv_obj_get_child(wave, 13);
+    const int first_height = lv_obj_get_height(center_bar);
+    bool animated = false;
+    for (int i = 0; i < 16; ++i) {
+        lv_tick_inc(kPttWaveFrameMs);
+        lv_timer_handler();
+        lv_obj_update_layout(recording_screen);
+        animated |= lv_obj_get_height(center_bar) != first_height;
+    }
+    assert(animated);
     Save("assistant-casual-recording");
+    assert(notice);
+    lv_obj_remove_flag(notice, LV_OBJ_FLAG_HIDDEN);
+    Pump();
+    assert(lv_obj_has_flag(wave, LV_OBJ_FLAG_HIDDEN));
+    lv_obj_add_flag(notice, LV_OBJ_FLAG_HIDDEN);
+    Pump();
+    assert(!lv_obj_has_flag(wave, LV_OBJ_FLAG_HIDDEN));
     audio.Feed(16000);boot_held=false;registry[active].on_boot_press_up();Pump();
     assert(!audio.active && harness_voice::Snapshot().duration_ms==1000);
     assert(harness_voice::Snapshot().phase==harness_voice::Phase::Complete);
     assert(PowerPolicy::GetInstance().idle() && audio.frozen);
     assert(Find(lv_screen_active(),"正在发送录音…"));
+    assert(lv_obj_has_flag(wave, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_obj_get_style_text_opa(clock, LV_PART_MAIN) == LV_OPA_COVER);
     const auto starts_before_pending = audio.starts;
     boot_held=true;registry[active].on_boot_long_press();Pump();
     assert(audio.starts == starts_before_pending && audio.frozen);
@@ -580,7 +655,10 @@ int main() {
     PreviewRecording().phase = UploadPhase::Accepted;
     audio.ReleaseLocalRecording();
     boot_held=true;registry[active].on_boot_long_press();Pump();assert(audio.active);
+    assert(!lv_obj_has_flag(wave, LV_OBJ_FLAG_HIDDEN));
     HarnessScreen::OnEnterStandby();asleep=true;Pump();
+    assert(lv_obj_has_flag(wave, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_obj_get_style_text_opa(clock, LV_PART_MAIN) == LV_OPA_COVER);
     assert(!audio.active && PowerPolicy::GetInstance().idle());asleep=false;boot_held=false;
 
     ScreenGoHome();Pump();assert(!audio.active && PowerPolicy::GetInstance().idle());

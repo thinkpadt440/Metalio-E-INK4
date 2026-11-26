@@ -85,6 +85,33 @@ int main(){
         network.data.status = 503;
         Check(io.Request("GET", "/api/v1/sync").status == 503 && calls == 1, "error response published date");
     });
+    test("health check distinguishes the target gateway and Harness status", [] {
+        Network network;
+        SocketIo io(network);
+        const Config target{"http://127.0.0.1:18081", "metalio_test", "test", "test_boot"};
+        const auto check = [&](int status, const char* body, ServerHealth expected) {
+            network.data.status = status;
+            network.data.body = body;
+            network.data.length = std::to_string(network.data.body.size());
+            const auto result = io.CheckHealth(target);
+            Check(result.state == expected && result.http_status == status, "unexpected health result");
+        };
+        check(200, R"({"data":{"status":"ok","harness_connected":true}})", ServerHealth::Healthy);
+        Check(network.data.url == "http://127.0.0.1:18081/health" && network.data.method == "GET" &&
+              network.data.id == 5 && network.websocket_id == -1, "health check opened the wrong connection");
+        Check(network.data.headers["X-Device-ID"] == target.device_id, "missing device identity");
+        check(200, R"({"status":"ok"})", ServerHealth::GatewayOnly);
+        check(200, R"({"data":{"status":"degraded","harness_connected":false}})", ServerHealth::HarnessUnavailable);
+        check(503, R"({"data":{"status":"degraded","harness_connected":false}})", ServerHealth::HarnessUnavailable);
+        check(503, R"({"error":"unavailable"})", ServerHealth::HttpError);
+        check(200, R"({"status":"ok","harness_connected":"false"})", ServerHealth::InvalidResponse);
+        network.data.type = "text/html";
+        check(200, "<html></html>", ServerHealth::InvalidResponse);
+        check(404, "<html></html>", ServerHealth::HttpError);
+        network.data.open = false;
+        Check(io.CheckHealth(target).state == ServerHealth::Unreachable, "transport failure must be reported");
+        Check(network.data.closes == 9, "health check leaked a connection");
+    });
     test("PATCH encodes body and PUT carries no body",[]{
         Fixture f;auto reply=f.io.Request("PATCH","/api/v1/sessions/s/settings","{\"model_id\":\"x\"}");
         Check(reply.error.empty()&&f.n.data.content=="{\"model_id\":\"x\"}"&&f.n.data.headers["Content-Type"]=="application/json","PATCH body");

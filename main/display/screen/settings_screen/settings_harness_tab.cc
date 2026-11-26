@@ -7,7 +7,12 @@
 #include "settings_common.h"
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
+#include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
+#include <freertos/task.h>
 #include <memory>
 #include <utility>
 
@@ -17,17 +22,26 @@ struct SaveRequest {
     std::atomic<bool> done{false};
 };
 
+struct TestRequest {
+    std::string origin;
+    harness::ServerHealthResult result{harness::ServerHealth::Unreachable};
+    std::atomic<bool> done{false};
+};
+
 struct HarnessSettingsUi {
     lv_obj_t* address = nullptr;
     lv_obj_t* connection = nullptr;
     lv_obj_t* save = nullptr;
+    lv_obj_t* test = nullptr;
     lv_obj_t* feedback = nullptr;
     lv_obj_t* keyboard = nullptr;
     lv_timer_t* timer = nullptr;
 };
 
 HarnessSettingsUi s_ui;
-std::shared_ptr<SaveRequest> s_request;  // Only accessed by LVGL; the job owns its own reference.
+// The UI and each job own independent references. Workers never touch widgets.
+std::shared_ptr<SaveRequest> s_request;
+std::shared_ptr<TestRequest> s_test;
 
 const char* Text(const char* zh, const char* en) {
     return std::strcmp(Lang::CODE, "zh-CN") == 0 ? zh : en;
@@ -65,19 +79,102 @@ const char* SaveMessage(harness::ServerOriginResult result) {
     return "";
 }
 
+void SetBusy(bool busy) {
+    for (auto* item : {s_ui.address, s_ui.test, s_ui.save}) {
+        if (busy) lv_obj_add_state(item, LV_STATE_DISABLED);
+        else lv_obj_clear_state(item, LV_STATE_DISABLED);
+    }
+}
+
+void ShowTestResult(const harness::ServerHealthResult& result) {
+    using harness::ServerHealth;
+    const char* message = "";
+    char http_error[64];
+    switch (result.state) {
+        case ServerHealth::Healthy:
+            message = Text("网关和 Harness 均可用", "Gateway and Harness are ready");
+            break;
+        case ServerHealth::GatewayOnly:
+            message = Text("网关可达，Harness 状态未知", "Gateway reachable. Harness status unknown");
+            break;
+        case ServerHealth::HarnessUnavailable:
+            message = Text("网关可达，Harness 未连接", "Gateway reachable. Harness disconnected");
+            break;
+        case ServerHealth::NetworkUnavailable:
+            message = Text("设备未联网", "Device offline");
+            break;
+        case ServerHealth::Unreachable:
+            message = Text("无法连接网关或请求超时", "Gateway unreachable or timed out");
+            break;
+        case ServerHealth::HttpError:
+            std::snprintf(http_error, sizeof(http_error), Text("健康检查返回 HTTP %d", "Health check returned HTTP %d"),
+                          result.http_status);
+            message = http_error;
+            break;
+        case ServerHealth::InvalidResponse:
+            message = Text("网关已响应，健康检查结果无效", "Invalid gateway health response");
+            break;
+        case ServerHealth::InvalidAddress:
+            message = SaveMessage(harness::ServerOriginResult::Invalid);
+            break;
+    }
+    product_ui::SetText(s_ui.feedback, message);
+}
+
+void TestWorker(void* arg) {
+    {
+        std::unique_ptr<std::shared_ptr<TestRequest>> job(
+            static_cast<std::shared_ptr<TestRequest>*>(arg));
+        auto& request = **job;
+        request.result = harness::TestServerOrigin(request.origin);
+        request.done.store(true);
+    }
+    vTaskDeleteWithCaps(nullptr);
+}
+
+void OnTest(lv_event_t*) {
+    if (s_request || s_test) return;
+    SettingsHarnessTab_HideKeyboard();
+    auto origin = harness::NormalizeServerOrigin(lv_textarea_get_text(s_ui.address));
+    if (!harness::ValidServerOrigin(origin)) {
+        product_ui::SetText(s_ui.feedback, origin.empty() ? Text("请先输入服务端地址", "Enter the server address")
+            : SaveMessage(harness::ServerOriginResult::Invalid));
+        return;
+    }
+    s_test = std::make_shared<TestRequest>();
+    s_test->origin = std::move(origin);
+    SetBusy(true);
+    product_ui::SetText(s_ui.feedback, Text("正在测试连接…", "Testing connection…"));
+    auto* job = new std::shared_ptr<TestRequest>(s_test);
+    if (xTaskCreateWithCaps(TestWorker, "harness_health", 8192, job, 4, nullptr,
+                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        delete job;
+        s_test.reset();
+        SetBusy(false);
+        product_ui::SetText(s_ui.feedback, Text("无法启动测试，请重试", "Could not start test. Try again."));
+    }
+}
+
 void Update(lv_timer_t*) {
     product_ui::SetText(s_ui.connection, StatusText());
+    if (s_test && s_test->done.load()) {
+        if (harness::NormalizeServerOrigin(lv_textarea_get_text(s_ui.address)) == s_test->origin)
+            ShowTestResult(s_test->result);
+        else
+            product_ui::SetText(s_ui.feedback, "");
+        s_test.reset();
+        SetBusy(false);
+    }
     if (!s_request || !s_request->done.load()) return;
     product_ui::SetText(s_ui.feedback, SaveMessage(s_request->result));
     if (s_request->result != harness::ServerOriginResult::Saved) {
         s_request.reset();
-        lv_obj_clear_state(s_ui.save, LV_STATE_DISABLED);
-        lv_obj_clear_state(s_ui.address, LV_STATE_DISABLED);
+        SetBusy(false);
     }
 }
 
 void OnSave(lv_event_t*) {
-    if (s_request) return;
+    if (s_request || s_test) return;
     SettingsHarnessTab_HideKeyboard();
     auto origin = harness::NormalizeServerOrigin(lv_textarea_get_text(s_ui.address));
     if (!origin.empty() && !harness::ValidServerOrigin(origin)) {
@@ -85,8 +182,7 @@ void OnSave(lv_event_t*) {
         return;
     }
     lv_textarea_set_text(s_ui.address, origin.c_str());
-    lv_obj_add_state(s_ui.save, LV_STATE_DISABLED);
-    lv_obj_add_state(s_ui.address, LV_STATE_DISABLED);
+    SetBusy(true);
     product_ui::SetText(s_ui.feedback, Text("正在保存…", "Saving..."));
     s_request = std::make_shared<SaveRequest>();
     Application::GetInstance().Schedule([request = s_request, origin = std::move(origin)]() mutable {
@@ -99,7 +195,11 @@ void OnSave(lv_event_t*) {
 }
 
 void OnEdit(lv_event_t*) {
-    if (!s_request) lv_obj_clear_flag(s_ui.keyboard, LV_OBJ_FLAG_HIDDEN);
+    if (!s_request && !s_test) lv_obj_clear_flag(s_ui.keyboard, LV_OBJ_FLAG_HIDDEN);
+}
+
+void OnAddressChanged(lv_event_t*) {
+    if (!s_request && !s_test) product_ui::SetText(s_ui.feedback, "");
 }
 
 void OnKeyboardClosed(lv_event_t*) {
@@ -159,8 +259,11 @@ void SettingsHarnessTab_Build(lv_obj_t* page) {
     AddLabel(page, Text("清空地址可停用连接。", "Clear the address to disable the connection."));
     AddLabel(page, Text("连接状态", "Connection status"));
     s_ui.connection = AddLabel(page, StatusText());
+    s_ui.test = SettingsCreateSelectableOption(page, Text("测试连接", "Test connection"), OnTest, 0);
     s_ui.save = SettingsCreateSelectableOption(page, Text("保存并重启", "Save and restart"), OnSave, 0);
-    s_ui.feedback = AddLabel(page, s_request ? Text("正在保存…", "Saving...") : "");
+    s_ui.feedback = AddLabel(page, s_request ? Text("正在保存…", "Saving...") :
+        s_test ? Text("正在测试连接…", "Testing connection…") : "");
+    lv_obj_add_event_cb(s_ui.address, OnAddressChanged, LV_EVENT_VALUE_CHANGED, nullptr);
 
     s_ui.keyboard = lv_keyboard_create(page);
     lv_obj_add_flag(s_ui.keyboard, LV_OBJ_FLAG_HIDDEN);
@@ -184,10 +287,7 @@ void SettingsHarnessTab_Build(lv_obj_t* page) {
     lv_obj_add_event_cb(s_ui.keyboard, OnKeyboardClosed, LV_EVENT_CANCEL, nullptr);
     lv_obj_add_event_cb(s_ui.address, OnKeyboardClosed, LV_EVENT_READY, nullptr);
 
-    if (s_request) {
-        lv_obj_add_state(s_ui.save, LV_STATE_DISABLED);
-        lv_obj_add_state(s_ui.address, LV_STATE_DISABLED);
-    }
+    SetBusy(s_request || s_test);
     s_ui.timer = lv_timer_create(Update, 500, nullptr);
     Update(nullptr);
 }

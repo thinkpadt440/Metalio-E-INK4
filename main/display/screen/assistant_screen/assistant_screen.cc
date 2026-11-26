@@ -18,6 +18,7 @@
 #include "display.h"
 #include "haptic_feedback.h"
 #include "lv_adapter_display.h"
+#include "ptt_wave.h"
 #include "screen_common.h"
 #include "task_screen/task_screen.h"
 #include "vk_key_handler.h"
@@ -132,9 +133,6 @@ void Assistant_OnAssistantLifecycle(lv_event_t* e) {
         Assistant_State().ptt.ptt_wave = nullptr;
         Assistant_State().ptt.touch_ptt_hit = nullptr;
         Assistant_State().ptt.ptt_wave_visible = false;
-        for (int i = 0; i < kPttWaveBars; ++i) {
-            Assistant_State().ptt.ptt_wave_bars[i] = nullptr;
-        }
         Assistant_State().layout.ui_font = nullptr;
         Assistant_State().layout.ui_font_bold = nullptr;
         Assistant_State().layout.viewport_w = 0;
@@ -334,14 +332,7 @@ lv_obj_t* AssistantScreen::Create() {
     lv_obj_move_foreground(status.bar);
     lv_obj_move_foreground(status.overlay);
 
-    // 录音波形叠在状态栏条带居中：高度约半栏偏矮、竖条更密；不改状态栏尺寸；按住说话时盖住时钟
-    Assistant_State().ptt.ptt_wave_max_h = header_h / 2;
-    if (Assistant_State().ptt.ptt_wave_max_h < 12) {
-        Assistant_State().ptt.ptt_wave_max_h = 12;
-    }
-    lv_obj_t* ptt_wave = Assistant_CreatePttWaveHost(scr, Assistant_State().ptt.ptt_wave_max_h);
-    lv_obj_align(ptt_wave, LV_ALIGN_TOP_MID, 0, (header_h - Assistant_State().ptt.ptt_wave_max_h) / 2);
-    lv_obj_add_flag(ptt_wave, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t* ptt_wave = CreatePttWave(scr, header_h);
 
     // 最后创建：保证 hit 在内容之上吃屏触；非 clickable 子对象不抢命中
     lv_obj_t* touch_ptt_hit = Assistant_CreateTouchPttHitLayer(scr);

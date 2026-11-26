@@ -1,10 +1,10 @@
 #include "service.h"
-#include "socket_io.h"
 #include "transport.h"
 #include "application.h"
 #include "board.h"
 #include "device_time.h"
 #include "harness_screen/harness_voice.h"
+#include "haptic_feedback.h"
 #include "power_policy.h"
 #include "system_info.h"
 #include <esp_app_desc.h>
@@ -284,6 +284,11 @@ void Worker() {
                 ready_connection.clear();
             }
             if (auto result = client.TakeApprovalResult()) s_approvals.Finish(std::move(*result));
+            if (!ready_connection.empty() && client.Ready() && s_approvals.TakePendingNotice()) {
+                Application::GetInstance().Schedule([] {
+                    if (ServiceReady()) HapticPulseIfEnabled();
+                });
+            }
             if (!client.ApprovalPending()) {
                 if (auto request = s_approvals.TakeRequest(); request &&
                     (!RunAllowsApproval(request->approval) || !client.SendApproval(*request))) {
@@ -470,6 +475,27 @@ ServerOriginResult SaveServerOrigin(std::string origin) {
     std::lock_guard<std::mutex> lock(s_mutex);
     s_server_change_in_progress = false;
     return ServerOriginResult::StorageError;
+}
+
+ServerHealthResult TestServerOrigin(const std::string& origin) {
+    if (!ValidServerOrigin(origin)) return {ServerHealth::InvalidAddress};
+
+    auto& board = Board::GetInstance();
+    auto& power = PowerPolicy::GetInstance();
+    const auto state = power.GetHarnessNetworkState();
+    if (!state.allowed || board.IsWifiConfigMode()) return {ServerHealth::NetworkUnavailable};
+
+    PowerNeedHold keep_network(PowerNeed::OtaDownload);
+    if (!board.EnsureNetworkReady(5000) || !power.GetHarnessNetworkState().AllowsWorkAt(state.sleep_epoch)) {
+        return {ServerHealth::NetworkUnavailable};
+    }
+    auto* network = board.GetNetwork();
+    if (!network) return {ServerHealth::NetworkUnavailable};
+
+    auto config = FirmwareConfig();
+    config.base_url = origin;
+    SocketIo io(*network);
+    return io.CheckHealth(config);
 }
 
 void StopService(){s_stop=true;}

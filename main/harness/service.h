@@ -1,6 +1,6 @@
 #pragma once
 #include "catalog.h"
-#include "client.h"
+#include "socket_io.h"
 #include <memory>
 namespace harness {
 enum class ServerOriginResult { Saved, Unchanged, Invalid, RecordingPending, StorageError };
@@ -10,6 +10,8 @@ void InitializeServerOrigin();
 std::string ConfiguredServerOrigin();
 // Call on the application task. A successful change takes effect after reboot.
 ServerOriginResult SaveServerOrigin(std::string origin);
+// Run a single HTTP health check on a worker task for the supplied address.
+ServerHealthResult TestServerOrigin(const std::string& origin);
 void StartService();
 void StopService();
 ConnectionSnapshot ServiceStatus();

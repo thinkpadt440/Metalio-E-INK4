@@ -18,8 +18,6 @@ void Assistant_RequestSyncPttOverlay();
 void Assistant_StopListeningIfNoPttHeld(const char* why);
 /** @brief 显示或隐藏状态栏波形 */
 void Assistant_ApplyPttWave(bool show);
-/** @brief 创建状态栏波形宿主控件 */
-lv_obj_t* Assistant_CreatePttWaveHost(lv_obj_t* parent, lv_coord_t bar_h);
 /** @brief 取消屏触 PTT 长按臂听定时器 */
 void Assistant_CancelTouchPttArmTimer();
 /** @brief 是否应显示 PTT 波形（Listening 且仍按住） */

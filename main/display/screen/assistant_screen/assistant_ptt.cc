@@ -6,6 +6,7 @@
 #include "boot_key_handler.h"
 #include "haptic_feedback.h"
 #include "lv_adapter_display.h"
+#include "ptt_wave.h"
 #include "screen_common.h"
 
 #include <cstring>
@@ -201,70 +202,9 @@ lv_obj_t* Assistant_CreateTouchPttHitLayer(lv_obj_t* scr) {
     return hit;
 }
 
-lv_coord_t PttWaveBarHeight(uint8_t curve_v) {
-    if (Assistant_State().ptt.ptt_wave_max_h <= 0) {
-        return 2;
-    }
-    lv_coord_t h = static_cast<lv_coord_t>((static_cast<int>(curve_v) * Assistant_State().ptt.ptt_wave_max_h) / 44);
-    if (h < 2) {
-        h = 2;
-    }
-    if (h > Assistant_State().ptt.ptt_wave_max_h) {
-        h = Assistant_State().ptt.ptt_wave_max_h;
-    }
-    return h;
-}
-
-lv_obj_t* CreatePttWaveBar(lv_obj_t* parent) {
-    lv_obj_t* bar = lv_obj_create(parent);
-    lv_obj_set_width(bar, kPttWaveBarW);
-    lv_obj_set_height(bar, 2);
-    lv_obj_set_style_bg_color(bar, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(bar, 1, 0);
-    lv_obj_set_style_border_width(bar, 0, 0);
-    lv_obj_set_style_pad_all(bar, 0, 0);
-    lv_obj_clear_flag(bar, LV_OBJ_FLAG_CLICKABLE);
-    Assistant_DisableScroll(bar);
-    return bar;
-}
-
-lv_obj_t* Assistant_CreatePttWaveHost(lv_obj_t* parent, lv_coord_t bar_h) {
-    lv_obj_t* host = lv_obj_create(parent);
-    lv_obj_set_size(host, LV_SIZE_CONTENT, bar_h);
-    lv_obj_set_style_bg_opa(host, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(host, 0, 0);
-    lv_obj_set_style_pad_all(host, 0, 0);
-    lv_obj_set_style_pad_column(host, kPttWaveBarGap, 0);
-    lv_obj_set_style_radius(host, 0, 0);
-    lv_obj_set_flex_flow(host, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(host, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(host, LV_OBJ_FLAG_CLICKABLE);
-    Assistant_DisableScroll(host);
-    for (int i = 0; i < kPttWaveBars; ++i) {
-        Assistant_State().ptt.ptt_wave_bars[i] = CreatePttWaveBar(host);
-    }
-    return host;
-}
-
-void UpdatePttWaveBars() {
-    constexpr int kCenter = kPttWaveBars / 2;
-    for (int i = 0; i < kPttWaveBars; ++i) {
-        if (Assistant_State().ptt.ptt_wave_bars[i] == nullptr || !lv_obj_is_valid(Assistant_State().ptt.ptt_wave_bars[i])) {
-            continue;
-        }
-        const int dist = (i >= kCenter) ? (i - kCenter) : (kCenter - i);
-        const int phase = (Assistant_State().ptt.ptt_wave_frame + dist) % kPttWaveFrames;
-        lv_obj_set_height(Assistant_State().ptt.ptt_wave_bars[i], PttWaveBarHeight(kPttWaveCurve[phase]));
-    }
-}
-
-void OnPttWaveTimer(lv_timer_t* /*t*/) {
-    if (!Assistant_State().ptt.ptt_wave_visible) {
-        return;
-    }
-    Assistant_State().ptt.ptt_wave_frame = static_cast<uint8_t>((Assistant_State().ptt.ptt_wave_frame + 1) % kPttWaveFrames);
-    UpdatePttWaveBars();
+void OnPttWaveTimer(lv_timer_t*) {
+    auto& ptt = Assistant_State().ptt;
+    if (ptt.ptt_wave_visible) DrawPttWaveFrame(ptt.ptt_wave, ++ptt.ptt_wave_frame);
 }
 
 void Assistant_StopPttWaveAnim() {
@@ -277,12 +217,7 @@ void Assistant_StopPttWaveAnim() {
 
 void StartPttWaveAnim() {
     Assistant_StopPttWaveAnim();
-    for (int i = 0; i < kPttWaveBars; ++i) {
-        if (Assistant_State().ptt.ptt_wave_bars[i] == nullptr || !lv_obj_is_valid(Assistant_State().ptt.ptt_wave_bars[i])) {
-            return;
-        }
-    }
-    UpdatePttWaveBars();
+    DrawPttWaveFrame(Assistant_State().ptt.ptt_wave, 0);
     Assistant_State().ptt.ptt_wave_timer = lv_timer_create(OnPttWaveTimer, kPttWaveFrameMs, nullptr);
     if (Assistant_State().ptt.ptt_wave_timer == nullptr) {
         ESP_LOGW(TAG, "StartPttWaveAnim: lv_timer_create failed");
