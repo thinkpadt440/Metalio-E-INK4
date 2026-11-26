@@ -13,6 +13,7 @@
 #include <lvgl.h>
 
 #include "assets/lang_config.h"
+#include "fontpack_lvgl.h"
 #include "haptic_feedback.h"
 
 void StandbyClassic_RefreshDateOnce() {
@@ -102,6 +103,30 @@ void StandbyClassic_BuildUi(lv_obj_t* root) {
     lv_obj_set_style_pad_row(center, 0, 0);
     lv_obj_clear_flag(center, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(center, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t* logo = lv_obj_create(center);
+    lv_obj_remove_style_all(logo);
+    lv_obj_set_size(logo, 270, 80);
+    lv_obj_set_style_bg_color(logo, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(logo, LV_OPA_COVER, 0);
+    lv_obj_set_style_margin_top(logo, 20, 0);
+    lv_obj_set_style_margin_bottom(logo, 20, 0);
+    lv_obj_clear_flag(logo, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(logo, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* logo_text = lv_label_create(logo);
+    lv_label_set_text(logo_text, "Lenovo");
+    const lv_font_t* logo_font = fontpack_lv_font_get(30, 4);
+    if (logo_font == nullptr) logo_font = fontpack_lv_font_ui();
+    lv_obj_set_style_text_font(logo_text, logo_font, 0);
+    lv_obj_set_style_transform_scale_x(logo_text, 512, 0);
+    lv_obj_set_style_transform_scale_y(logo_text, 512, 0);
+    lv_obj_update_layout(logo_text);
+    lv_obj_set_style_transform_pivot_x(logo_text, lv_obj_get_width(logo_text) / 2, 0);
+    lv_obj_set_style_transform_pivot_y(logo_text, lv_obj_get_height(logo_text) / 2, 0);
+    lv_obj_set_style_text_color(logo_text, lv_color_white(), 0);
+    lv_obj_center(logo_text);
+    lv_obj_clear_flag(logo_text, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t* spacer = lv_obj_create(center);
     lv_obj_remove_style_all(spacer);
