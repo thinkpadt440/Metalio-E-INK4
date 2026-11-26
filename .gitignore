@@ -1,3 +1,4 @@
+sdkconfig.old
 tmp/
 components/*
 !components/esp-ml307/
